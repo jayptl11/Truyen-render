@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, memo, useCallback } from 'react';
-import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Play, Pause, Square, Edit3, Globe, RefreshCw, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, Clock, Timer, Settings, ArrowLeft, CheckCircle2, DownloadCloud, Hash } from 'lucide-react';
+import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Play, Pause, Square, Edit3, Globe, RefreshCw, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, Clock, Timer, Settings, ArrowLeft, CheckCircle2, Hash } from 'lucide-react';
 
 // --- SUB-COMPONENT: PARAGRAPH RENDERER ---
 const ParagraphItem = memo(({ text, isActive, activeCharIndex, onClick, index, setRef }: any) => {
