@@ -69,6 +69,7 @@ export default function StoryFetcher() {
   const [error, setError] = useState('');
   const [step, setStep] = useState(1);
   const [inputMode, setInputMode] = useState<'url' | 'manual'>('url');
+  const [translationStyle, setTranslationStyle] = useState<'modern' | 'ancient'>('modern');
   
   const [mobileTab, setMobileTab] = useState<'input' | 'reader'>('input');
 
@@ -325,11 +326,15 @@ export default function StoryFetcher() {
       if (validKeys.length === 0) throw new Error("Cần nhập ít nhất 1 API Key.");
       
       let lastError;
+      const promptText = translationStyle === 'ancient' 
+        ? `Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang lão luyện. Hãy viết lại đoạn convert Hán Việt sau sang thuần Việt mượt mà, sử dụng văn phong hào hùng, cổ kính, dùng các từ ngữ phù hợp bối cảnh xưa (huynh đệ, tại hạ, cô nương, v.v...). Giữ nguyên cấu trúc đoạn văn, tuyệt đối không thêm lời dẫn:\n\n`
+        : `Bạn là biên tập viên truyện hiện đại chuyên nghiệp. Hãy viết lại đoạn convert Hán Việt sau sang tiếng Việt hiện đại, văn phong tự nhiên, dễ hiểu, phù hợp với truyện đô thị/ngôn tình hiện đại (dùng anh/em/cậu/tớ tùy ngữ cảnh). Giữ nguyên cấu trúc đoạn văn, tuyệt đối không thêm lời dẫn:\n\n`;
+
       for (const key of validKeys) {
         try {
             const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${key}`, {
                 method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ contents: [{ parts: [{ text: `Bạn là biên tập viên. Viết lại convert Hán Việt sang thuần Việt, giữ nguyên cấu trúc đoạn văn, không thêm lời dẫn:\n\n` + text }] }] })
+                body: JSON.stringify({ contents: [{ parts: [{ text: promptText + text }] }] })
             });
             if (response.status === 429) { console.warn(`Key ...${key.slice(-4)} hết quota (429), thử key khác...`); continue; }
             if (!response.ok) throw new Error(`Lỗi API: ${response.status}`);
@@ -723,9 +728,17 @@ export default function StoryFetcher() {
              )}
 
              {/* Mode Switcher */}
-             <div className="flex p-1 bg-slate-100 rounded-xl shadow-inner">
-                 <button onClick={() => setInputMode('url')} className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${inputMode === 'url' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Globe size={16}/> Link Web</button>
-                 <button onClick={() => setInputMode('manual')} className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${inputMode === 'manual' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Edit3 size={16}/> Text Gốc</button>
+             <div className="flex flex-col gap-2">
+                 <div className="flex p-1 bg-slate-100 rounded-xl shadow-inner">
+                     <button onClick={() => setInputMode('url')} className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${inputMode === 'url' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Globe size={16}/> Link Web</button>
+                     <button onClick={() => setInputMode('manual')} className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${inputMode === 'manual' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Edit3 size={16}/> Text Gốc</button>
+                 </div>
+                 
+                 {/* Translation Style Switcher */}
+                 <div className="flex p-1 bg-slate-100 rounded-xl shadow-inner">
+                     <button onClick={() => setTranslationStyle('ancient')} className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${translationStyle === 'ancient' ? 'bg-amber-100 text-amber-700 shadow-sm border border-amber-200' : 'text-slate-500 hover:text-slate-700'}`}><FileText size={14}/> Cổ Trang</button>
+                     <button onClick={() => setTranslationStyle('modern')} className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${translationStyle === 'modern' ? 'bg-blue-100 text-blue-700 shadow-sm border border-blue-200' : 'text-slate-500 hover:text-slate-700'}`}><Sparkles size={14}/> Hiện Đại</button>
+                 </div>
              </div>
 
              {/* Input Area */}
