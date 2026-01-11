@@ -99,6 +99,7 @@ export default function StoryFetcher() {
   const [preloadedData, setPreloadedData] = useState<any>(null);
   const [isPreloading, setIsPreloading] = useState(false);
 
+  const activeUtterancesRef = useRef<Set<SpeechSynthesisUtterance>>(new Set());
   const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
   const currentChunkIndexRef = useRef(0);
   const chunkRefs = useRef<(HTMLParagraphElement | null)[]>([]); 
@@ -314,6 +315,7 @@ export default function StoryFetcher() {
   
   const stopSpeech = useCallback(() => { 
     window.speechSynthesis.cancel(); 
+    activeUtterancesRef.current.clear();
     setIsSpeaking(false); setIsPaused(false); setActiveChunkIndex(null); setActiveCharIndex(null); currentChunkIndexRef.current = 0; 
   }, []);
 
@@ -347,48 +349,103 @@ export default function StoryFetcher() {
       fetchContent(targetUrl);
   };
 
-  const speakNextChunk = useCallback(() => {
-    if (currentChunkIndexRef.current >= chunks.length) {
-      if (autoModeRef.current && nextChapterUrl) { 
-          loadChapter(nextChapterUrl, true);
-      } else { 
-          setIsSpeaking(false); setIsPaused(false); setActiveChunkIndex(null); setActiveCharIndex(null); 
-      }
-      return;
-    }
+  const prepareUtterance = useCallback((index: number) => {
+    if (index >= chunks.length || index < 0) return null;
 
-    const currentIndex = currentChunkIndexRef.current;
-    setActiveChunkIndex(currentIndex);
-    setActiveCharIndex(0);
-
-    const chunkText = chunks[currentIndex];
+    const chunkText = chunks[index];
     const utterance = new SpeechSynthesisUtterance(chunkText);
     utterance.rate = speechRate;
     utterance.pitch = 1.0;
     if (selectedVoice) utterance.voice = selectedVoice;
 
-    utterance.onboundary = (event) => { if (event.name === 'word') setActiveCharIndex(event.charIndex); };
-    utterance.onend = () => { currentChunkIndexRef.current++; setActiveCharIndex(null); speakNextChunk(); };
-    utterance.onerror = (e) => { if (e.error !== 'interrupted' && e.error !== 'canceled') { currentChunkIndexRef.current++; speakNextChunk(); }};
+    utterance.onstart = () => {
+         setActiveChunkIndex(index);
+         setActiveCharIndex(0);
+         currentChunkIndexRef.current = index;
+         speechRef.current = utterance;
+    };
 
-    speechRef.current = utterance;
-    window.speechSynthesis.speak(utterance);
-  }, [chunks, nextChapterUrl, speechRate, selectedVoice, preloadedData, autoStopChapterLimit, chaptersReadCount]); 
+    utterance.onboundary = (event) => {
+         if (event.name === 'word') setActiveCharIndex(event.charIndex);
+    };
+
+    utterance.onend = () => {
+         activeUtterancesRef.current.delete(utterance);
+         setActiveCharIndex(null);
+         
+         // Queue 2 chunks ahead to keep buffer full
+         scheduleNext(index + 2);
+
+         if (index === chunks.length - 1) {
+            if (autoModeRef.current && nextChapterUrl) {
+                // Wait a bit before loading next chapter to let user hear end
+                setTimeout(() => loadChapter(nextChapterUrl, true), 500);
+            } else {
+                setIsSpeaking(false);
+                setIsPaused(false);
+            }
+         }
+    };
+
+    utterance.onerror = (e) => {
+         activeUtterancesRef.current.delete(utterance);
+         if (e.error !== 'interrupted' && e.error !== 'canceled') {
+             console.error('Speech error', e);
+             // Skip error?
+             scheduleNext(index + 1);
+         }
+    };
+
+    activeUtterancesRef.current.add(utterance);
+    return utterance;
+  }, [chunks, speechRate, selectedVoice, nextChapterUrl, loadChapter]); // Removed dependencies that might cause recreating too often if strictly not needed, but here they are needed.
+
+  const scheduleNext = useCallback((index: number) => {
+      const u = prepareUtterance(index);
+      if (u) {
+          window.speechSynthesis.speak(u);
+      }
+  }, [prepareUtterance]);
+
+  const speakNextChunk = useCallback(() => {
+     // Replaced by startSpeakingSequence but keeping name valid for now if referenced elsewhere, 
+     // but basically this function is now "Start Sequence"
+     window.speechSynthesis.cancel();
+     activeUtterancesRef.current.clear();
+     
+     const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
+     
+     const u1 = prepareUtterance(startIdx);
+     if (u1) window.speechSynthesis.speak(u1);
+
+     const u2 = prepareUtterance(startIdx + 1);
+     if (u2) window.speechSynthesis.speak(u2);
+     
+  }, [prepareUtterance, chunks]); // Simplify dependencies
 
   const toggleSpeech = useCallback(() => {
     if (voices.length === 0) wakeUpSpeechEngine();
     if (!chunks.length) return;
     if (isSpeaking && !isPaused) { window.speechSynthesis.pause(); setIsPaused(true); } 
     else if (isPaused) { window.speechSynthesis.resume(); setIsPaused(false); } 
-    else { window.speechSynthesis.cancel(); setIsSpeaking(true); setIsPaused(false); if (currentChunkIndexRef.current >= chunks.length) currentChunkIndexRef.current = 0; speakNextChunk(); }
+    else { 
+        window.speechSynthesis.cancel(); 
+        setIsSpeaking(true); setIsPaused(false); 
+        if (currentChunkIndexRef.current >= chunks.length) currentChunkIndexRef.current = 0; 
+        speakNextChunk(); 
+    }
   }, [chunks, isSpeaking, isPaused, speakNextChunk, voices]);
 
   const jumpToChunk = useCallback((index: number) => { 
     window.speechSynthesis.cancel(); 
+    activeUtterancesRef.current.clear();
+
     currentChunkIndexRef.current = index; 
     setActiveChunkIndex(index); 
     setActiveCharIndex(null); 
     setIsSpeaking(true); setIsPaused(false); 
+    
+    // Use timeout to ensure cancel takes effect before queuing
     setTimeout(() => speakNextChunk(), 50); 
   }, [speakNextChunk]);
 
