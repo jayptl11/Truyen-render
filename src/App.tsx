@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, memo, useCallback } from 'react';
 import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Play, Pause, Square, Edit3, Globe, RefreshCw, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, Clock, Timer, Settings, ArrowLeft, CheckCircle2, Hash, History as HistoryIcon, Type, Menu } from 'lucide-react';
+import { EdgeSpeechService, EDGE_VOICES } from './services/edgeTTS';
 
 // --- SUB-COMPONENT: PARAGRAPH RENDERER ---
 const ParagraphItem = memo(({ text, isActive, activeCharIndex, onClick, index, setRef }: any) => {
@@ -113,6 +114,12 @@ export default function StoryFetcher() {
   const chunkRefs = useRef<(HTMLParagraphElement | null)[]>([]); 
   const containerRef = useRef<HTMLDivElement>(null); 
   const autoModeRef = useRef(isAutoMode);
+
+  // Edge TTS Refs
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const edgeServiceRef = useRef(new EdgeSpeechService());
+  const edgeBoundariesRef = useRef<any[]>([]);
+  const isEdgePlayingRef = useRef(false);
   
   useEffect(() => { autoModeRef.current = isAutoMode; }, [isAutoMode]);
 
@@ -169,25 +176,38 @@ export default function StoryFetcher() {
 
   // --- VOICE LOADING LOGIC ---
   const loadVoices = useCallback(() => {
+    const edgeVoices = EDGE_VOICES.map(v => ({
+        default: false,
+        lang: 'vi-VN',
+        localService: false, 
+        name: v.name,
+        voiceURI: v.name
+    } as unknown as SpeechSynthesisVoice));
+
     if (!window.speechSynthesis) {
-        setVoiceDebugMsg("Trình duyệt không hỗ trợ đọc.");
+        setVoiceDebugMsg("Trình duyệt không hỗ trợ đọc Local. Đã bật Online.");
+        setVoices(edgeVoices);
+        if (edgeVoices.length > 0 && !selectedVoice) setSelectedVoice(edgeVoices[0]);
         return;
     }
 
     const availableVoices = window.speechSynthesis.getVoices();
-    setVoices(availableVoices);
+    const combinedVoices = [...availableVoices, ...edgeVoices];
+    setVoices(combinedVoices);
     
-    const vnVoices = availableVoices.filter(v => 
+    const vnVoices = combinedVoices.filter(v => 
         v.lang.toLowerCase().includes('vi') || 
         v.lang.toLowerCase().includes('vn') ||
         v.name.toLowerCase().includes('vietnam')
     );
     
-    setVoiceDebugMsg(`Tìm thấy ${availableVoices.length} giọng (${vnVoices.length} tiếng Việt).`);
+    setVoiceDebugMsg(`Giọng: ${availableVoices.length} máy + ${edgeVoices.length} Online.`);
 
+    const edgeHoaiMy = combinedVoices.find(v => v.name === 'vi-VN-HoaiMyNeural');
     const hoaiMyVoice = vnVoices.find(v => v.name.includes('HoaiMy') || v.name.includes('Hoai My'));
     const msFemale = vnVoices.find(v => v.name.includes('Microsoft') && (v.name.includes('Female') || v.name.includes('Nữ')));
-    const defaultVoice = hoaiMyVoice 
+    const defaultVoice = edgeHoaiMy
+                      || hoaiMyVoice 
                       || msFemale 
                       || vnVoices.find(v => v.name.includes('Microsoft')) 
                       || vnVoices.find(v => v.name.includes('Google')) 
@@ -195,7 +215,7 @@ export default function StoryFetcher() {
     
     if (!selectedVoice && defaultVoice) {
         setSelectedVoice(defaultVoice);
-    } else if (selectedVoice && !availableVoices.find(v => v.name === selectedVoice.name)) {
+    } else if (selectedVoice && !combinedVoices.find(v => v.name === selectedVoice.name)) {
         if (defaultVoice) setSelectedVoice(defaultVoice);
     }
   }, [selectedVoice]);
@@ -359,6 +379,12 @@ export default function StoryFetcher() {
   const stopSpeech = useCallback(() => { 
     window.speechSynthesis.cancel(); 
     activeUtterancesRef.current.clear();
+    
+    if (audioRef.current) {
+        audioRef.current.pause();
+        isEdgePlayingRef.current = false;
+    }
+
     setIsSpeaking(false); setIsPaused(false); setActiveChunkIndex(null); setActiveCharIndex(null); currentChunkIndexRef.current = 0; 
   }, []);
 
@@ -391,6 +417,68 @@ export default function StoryFetcher() {
 
       fetchContent(targetUrl);
   };
+
+  const playEdgeTTS = useCallback(async (index: number) => {
+      if (index >= chunks.length || index < 0 || !audioRef.current) return;
+      
+      currentChunkIndexRef.current = index;
+      setActiveChunkIndex(index);
+      setActiveCharIndex(0);
+      isEdgePlayingRef.current = true;
+
+      const text = chunks[index];
+      const voiceName = selectedVoice ? selectedVoice.name : EDGE_VOICES[0].name;
+
+      try {
+          const { audioBlob, wordBoundaries } = await edgeServiceRef.current.synthesize(text, voiceName, speechRate);
+          
+          // Check if stopped while fetching
+          if (!isEdgePlayingRef.current) return;
+
+          edgeBoundariesRef.current = wordBoundaries;
+          const url = URL.createObjectURL(audioBlob);
+          
+          const audio = audioRef.current;
+          audio.src = url;
+          audio.playbackRate = 1.0; 
+          
+          audio.ontimeupdate = () => {
+                const curTicks = audio.currentTime * 10000000;
+                const boundary = edgeBoundariesRef.current.find(b => 
+                    curTicks >= b.Offset && curTicks < (b.Offset + b.Duration)
+                );
+                if (boundary && boundary.text && typeof boundary.text.Offset === 'number') {
+                    setActiveCharIndex(boundary.text.Offset);
+                }
+          };
+
+          audio.onended = () => {
+               URL.revokeObjectURL(url);
+               if (isSpeaking && !isPaused) {
+                   const nextIndex = currentChunkIndexRef.current + 1;
+                   if (nextIndex < chunks.length) {
+                       playEdgeTTS(nextIndex);
+                   } else {
+                       if (autoModeRef.current && nextChapterUrl) {
+                            setTimeout(() => loadChapter(nextChapterUrl, true), 500);
+                       } else {
+                            stopSpeech();
+                       }
+                   }
+               }
+          };
+          
+          audio.onerror = (e) => {
+              console.error("Audio Error", e);
+              if (isSpeaking) playEdgeTTS(index + 1);
+          };
+
+          await audio.play();
+      } catch (e) {
+          console.error(e);
+          if (isSpeaking) playEdgeTTS(index + 1);
+      }
+  }, [chunks, speechRate, selectedVoice, isSpeaking, isPaused, nextChapterUrl]); // loadChapter is stable? It uses state.
 
   const prepareUtterance = useCallback((index: number) => {
     if (index >= chunks.length || index < 0) return null;
@@ -453,10 +541,17 @@ export default function StoryFetcher() {
   }, [prepareUtterance]);
 
   const speakNextChunk = useCallback(() => {
-     // Replaced by startSpeakingSequence but keeping name valid for now if referenced elsewhere, 
-     // but basically this function is now "Start Sequence"
      window.speechSynthesis.cancel();
      activeUtterancesRef.current.clear();
+     
+     const isEdge = selectedVoice && EDGE_VOICES.some(v => v.name === selectedVoice.name);
+     
+     if (isEdge) {
+         const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
+         // Delay slightly to allow state updates
+         setTimeout(() => playEdgeTTS(startIdx), 0);
+         return;
+     }
      
      const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
      
@@ -466,34 +561,44 @@ export default function StoryFetcher() {
      const u2 = prepareUtterance(startIdx + 1);
      if (u2) window.speechSynthesis.speak(u2);
      
-  }, [prepareUtterance, chunks]); // Simplify dependencies
+  }, [prepareUtterance, chunks, selectedVoice, playEdgeTTS]);
 
   const toggleSpeech = useCallback(() => {
     if (voices.length === 0) wakeUpSpeechEngine();
     if (!chunks.length) return;
+    
     if (isSpeaking && !isPaused) { 
-        // Force Pause (actually Cancel + Save State)
+        // PAUSE
         activeUtterancesRef.current.clear();
         window.speechSynthesis.cancel();
+        if (audioRef.current) audioRef.current.pause();
         setIsPaused(true); 
     } 
     else if (isPaused) { 
-        // Resume from current pos
+        // RESUME
         setIsPaused(false); 
-        speakNextChunk();
+        
+        const isEdge = selectedVoice && EDGE_VOICES.some(v => v.name === selectedVoice.name);
+        if (isEdge && audioRef.current && audioRef.current.src && isEdgePlayingRef.current) {
+             audioRef.current.play();
+        } else {
+             speakNextChunk();
+        }
     } 
     else { 
-        // Start fresh or from existing index (if stopped/reset)
+        // START
         window.speechSynthesis.cancel(); 
+        if (audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; }
         setIsSpeaking(true); setIsPaused(false); 
         if (currentChunkIndexRef.current >= chunks.length) currentChunkIndexRef.current = 0; 
         speakNextChunk(); 
     }
-  }, [chunks, isSpeaking, isPaused, speakNextChunk, voices]);
+  }, [chunks, isSpeaking, isPaused, speakNextChunk, voices, selectedVoice]);
 
   const jumpToChunk = useCallback((index: number) => { 
     window.speechSynthesis.cancel(); 
     activeUtterancesRef.current.clear();
+    if (audioRef.current) { audioRef.current.pause(); isEdgePlayingRef.current = false; }
 
     currentChunkIndexRef.current = index; 
     setActiveChunkIndex(index); 
@@ -521,8 +626,8 @@ export default function StoryFetcher() {
       if (closestIndex !== -1 && closestIndex !== currentChunkIndexRef.current) { currentChunkIndexRef.current = closestIndex; }
   }, [chunks, isSpeaking]);
 
-  const handleRateChange = (e: React.ChangeEvent<HTMLInputElement>) => { const newRate = parseFloat(e.target.value); setSpeechRate(newRate); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); setTimeout(() => speakNextChunk(), 50); }};
-  const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => { const v = voices.find(val => val.name === e.target.value); if (v) { setSelectedVoice(v); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); setTimeout(() => speakNextChunk(), 50); }}};
+  const handleRateChange = (e: React.ChangeEvent<HTMLInputElement>) => { const newRate = parseFloat(e.target.value); setSpeechRate(newRate); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); if (audioRef.current) audioRef.current.pause(); setTimeout(() => speakNextChunk(), 50); }};
+  const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => { const v = voices.find(val => val.name === e.target.value); if (v) { setSelectedVoice(v); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); if (audioRef.current) audioRef.current.pause(); setTimeout(() => speakNextChunk(), 50); }}};
 
   const analyzeContent = async (type: 'summary' | 'explain') => {
     if (!translatedContent && !content) return;
@@ -593,7 +698,13 @@ export default function StoryFetcher() {
   };
 
   const processTranslatedText = (text: string) => { if (!text) return; const paragraphs = text.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0); setChunks(paragraphs); };
-  const formatVoiceName = (name: string) => { if (name.includes('HoaiMy')) return '✨ Hoài My'; if (name.includes('NamMinh')) return 'Nam Minh'; return name.replace('Microsoft Server Speech Text to Speech Voice (vi-VN, ', '').replace('Microsoft ', '').replace(')', ''); };
+  const formatVoiceName = (name: string) => { 
+      const edgeVoice = EDGE_VOICES.find(v => v.name === name);
+      if (edgeVoice) return `☁️ ${edgeVoice.friendlyName}`;
+      if (name.includes('HoaiMy')) return '✨ Hoài My (Local)'; 
+      if (name.includes('NamMinh')) return 'Nam Minh (Local)'; 
+      return name.replace('Microsoft Server Speech Text to Speech Voice (vi-VN, ', '').replace('Microsoft ', '').replace(')', ''); 
+  };
 
   // --- AUTO TRIGGERS ---
   useEffect(() => {
