@@ -551,7 +551,7 @@ export default function StoryFetcher() {
         <div className="bg-gradient-to-r from-blue-700 to-indigo-800 p-3 sm:p-4 text-white flex flex-row items-center justify-between shadow-md shrink-0 z-10">
           <div className="flex items-center gap-2 sm:gap-3">
             <div className="p-1.5 sm:p-2 bg-white/20 rounded-lg"><BookOpen size={20} className="text-white"/></div>
-            <div><h1 className="text-lg sm:text-xl font-bold tracking-wide">AI Dịch Truyện</h1><p className="text-[10px] sm:text-xs text-blue-200 hidden sm:block">Convert &rarr; Thuần Việt</p></div>
+            <div><h1 className="text-lg sm:text-xl font-bold tracking-wide">AI Dịch Truyện <span className="text-xs font-normal opacity-70">ver 1.1</span></h1><p className="text-[10px] sm:text-xs text-blue-200 hidden sm:block">Convert &rarr; Thuần Việt</p></div>
           </div>
           <div className="flex items-center gap-2">
              {mobileTab === 'reader' && (
