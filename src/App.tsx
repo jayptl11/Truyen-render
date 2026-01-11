@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, memo, useCallback } from 'react';
-import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Play, Pause, Square, Edit3, Globe, RefreshCw, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, Clock, Timer, Settings, ArrowLeft, CheckCircle2, Hash, History as HistoryIcon, Type, Menu } from 'lucide-react';
+import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Play, Pause, Square, Edit3, Globe, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, Settings, CheckCircle2, History as HistoryIcon, Home, Palette, Clock } from 'lucide-react';
 
 // --- SUB-COMPONENT: PARAGRAPH RENDERER ---
 const ParagraphItem = memo(({ text, isActive, activeCharIndex, onClick, index, setRef }: any) => {
@@ -92,7 +92,6 @@ export default function StoryFetcher() {
   const [autoStopChapterLimit, setAutoStopChapterLimit] = useState<number>(0); // 0 = Unlimited
   const [chaptersReadCount, setChaptersReadCount] = useState<number>(0); // Đếm số chương đã đọc trong phiên Auto
   
-  const [showTimerMenu, setShowTimerMenu] = useState(false);
   const [showMobileSettings, setShowMobileSettings] = useState(false);
 
   // --- PRELOAD STATES ---
@@ -105,7 +104,9 @@ export default function StoryFetcher() {
   const [history, setHistory] = useState<any[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [showAppearance, setShowAppearance] = useState(false);
-  const [showMainMenu, setShowMainMenu] = useState(false);
+  // --- CACHE STATE ---
+  const [translatedChapters, setTranslatedChapters] = useState<any[]>([]); // New state for cache
+  const [showCache, setShowCache] = useState(false); // To show "Chương đã dịch" list
 
   const activeUtterancesRef = useRef<Set<SpeechSynthesisUtterance>>(new Set());
   const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
@@ -141,6 +142,10 @@ export default function StoryFetcher() {
     if (savedHistory) {
         try { setHistory(JSON.parse(savedHistory)); } catch {}
     }
+    const savedTranslated = localStorage.getItem('reader_translated_cache');
+    if (savedTranslated) {
+        try { setTranslatedChapters(JSON.parse(savedTranslated)); } catch {}
+    }
   }, []);
 
   const saveToHistory = (url: string, contentSnippet: string) => {
@@ -151,11 +156,28 @@ export default function StoryFetcher() {
       if (lines.length > 0) title = lines[0].substring(0, 50);
       else title = url.split('/').pop() || "Link";
 
-      const newItem = { url, title, translatedContent: contentSnippet, timestamp: Date.now() };
-      const newHistory = [newItem, ...history.filter(h => h.url !== url)].slice(0, 20); // Keep last 20
+      // History now just saves reading progress/link, not necessarily full content if we use cache
+      const newItem = { url, title, timestamp: Date.now() }; // Simplified history item
+      const newHistory = [newItem, ...history.filter(h => h.url !== url)].slice(0, 50); 
       setHistory(newHistory);
       localStorage.setItem('reader_history', JSON.stringify(newHistory));
   };
+  
+  const saveToCache = (url: string, content: string, translatedContent: string, nextUrl: string | null, prevUrl: string | null) => {
+      if (!url || !translatedContent) return;
+      
+      let title = "Chương không tên";
+      const lines = translatedContent.split('\n');
+      if (lines.length > 0) title = lines[0].substring(0, 50);
+      
+      const newItem = { url, title, content, translatedContent, nextUrl, prevUrl, timestamp: Date.now() };
+      
+      // Update cache: remove old entry for same URL, add new to top
+      const newCache = [newItem, ...translatedChapters.filter(c => c.url !== url)].slice(0, 20); // Limit to 20 chapters to save space
+      setTranslatedChapters(newCache);
+      localStorage.setItem('reader_translated_cache', JSON.stringify(newCache));
+  };
+
 
   const changeTheme = (t: 'light' | 'dark' | 'sepia') => {
       setTheme(t);
@@ -231,8 +253,8 @@ export default function StoryFetcher() {
     return () => clearInterval(interval);
   }, [timeLeft]);
 
-  const setTimer = (m: number) => { setTimeLeft(m * 60); setShowTimerMenu(false); setShowMobileSettings(false); };
-  const setChapterLimit = (c: number) => { setAutoStopChapterLimit(c); setChaptersReadCount(0); setShowTimerMenu(false); setShowMobileSettings(false); };
+  const setTimer = (m: number) => { setTimeLeft(m * 60); setShowMobileSettings(false); };
+  const setChapterLimit = (c: number) => { setAutoStopChapterLimit(c); setChaptersReadCount(0); setShowMobileSettings(false); };
   const formatTime = (s: number) => `${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`;
 
   // --- HELPER FUNCTIONS FOR FETCHING ---
@@ -332,6 +354,20 @@ export default function StoryFetcher() {
 
   const doPreload = async () => {
       if (!nextChapterUrl || apiKeys.filter(k => k.trim()).length === 0) return;
+
+      // Check cache first
+      const cached = translatedChapters.find(c => c.url === nextChapterUrl);
+      if (cached) {
+          setPreloadedData({
+              url: nextChapterUrl,
+              content: cached.content,
+              translatedContent: cached.translatedContent,
+              nextUrl: cached.nextUrl,
+              prevUrl: cached.prevUrl
+          });
+          return;
+      }
+
       setIsPreloading(true);
       try {
           const data = await fetchRawStoryData(nextChapterUrl);
@@ -345,6 +381,8 @@ export default function StoryFetcher() {
                       nextUrl: data.nextUrl,
                       prevUrl: data.prevUrl
                   });
+                  // Also save to cache immediately
+                  saveToCache(nextChapterUrl, data.content, translated, data.nextUrl, data.prevUrl);
               }
           }
       } catch (e) {
@@ -375,6 +413,22 @@ export default function StoryFetcher() {
           setChaptersReadCount(prev => prev + 1);
       }
 
+      // CHECK CACHE FIRST
+      const cached = translatedChapters.find(c => c.url === targetUrl);
+      if (cached) {
+          setUrl(targetUrl);
+          setContent(cached.content);
+          setTranslatedContent(cached.translatedContent);
+          setNextChapterUrl(cached.nextUrl);
+          setPrevChapterUrl(cached.prevUrl);
+          processTranslatedText(cached.translatedContent);
+          setStep(3);
+          setMobileTab('reader');
+          saveToHistory(targetUrl, cached.translatedContent); // Log viewing
+          window.scrollTo({ top: 0, behavior: 'smooth' });
+          return;
+      }
+
       if (preloadedData && preloadedData.url === targetUrl) {
           setUrl(targetUrl);
           setContent(preloadedData.content);
@@ -384,6 +438,8 @@ export default function StoryFetcher() {
           processTranslatedText(preloadedData.translatedContent);
           setStep(3);
           setMobileTab('reader');
+          saveToHistory(targetUrl, preloadedData.translatedContent);
+          saveToCache(targetUrl, preloadedData.content, preloadedData.translatedContent, preloadedData.nextUrl, preloadedData.prevUrl); // Save to cache confirmed
           setPreloadedData(null); 
           window.scrollTo({ top: 0, behavior: 'smooth' });
           return; 
@@ -589,6 +645,7 @@ export default function StoryFetcher() {
       const translated = await fetchTranslation(content);
       setTranslatedContent(translated); processTranslatedText(translated); setStep(3); setMobileTab('reader');
       saveToHistory(url || nextChapterUrl || "", translated);
+      saveToCache(url || nextChapterUrl || "", content, translated, nextChapterUrl, prevChapterUrl); // Updated to saveNext/Prev might be tricky here as state relies on fetch
     } catch (err: any) { setError(err.message || 'Lỗi khi gọi AI.'); } finally { setTranslating(false); }
   };
 
@@ -609,173 +666,390 @@ export default function StoryFetcher() {
   }, [activeChunkIndex]);
 
   return (
-    <div className="flex flex-col h-[100dvh] sm:h-full bg-slate-50 font-sans text-slate-800">
+    <div className="flex h-[100dvh] w-full bg-slate-100 text-slate-800 font-sans overflow-hidden">
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,300;400;500;600&display=swap'); .font-literata { font-family: 'Literata', serif; }`}</style>
-      <div className="w-full h-full sm:max-w-6xl sm:mx-auto sm:bg-white sm:shadow-xl sm:rounded-xl overflow-hidden sm:border border-slate-200 sm:m-4 flex flex-col">
-        <div className="bg-gradient-to-r from-blue-700 to-indigo-800 p-3 sm:p-4 text-white flex flex-row items-center justify-between shadow-md shrink-0 z-10">
-          <div className="flex items-center gap-2 sm:gap-3">
-            <div className="p-1.5 sm:p-2 bg-white/20 rounded-lg"><BookOpen size={20} className="text-white"/></div>
-            <div><h1 className="text-lg sm:text-xl font-bold tracking-wide">AI Dịch Truyện <span className="text-xs font-normal opacity-70">ver 1.1</span></h1><p className="text-[10px] sm:text-xs text-blue-200 hidden sm:block">Convert &rarr; Thuần Việt</p></div>
-          </div>
-          <div className="flex items-center gap-2">
-             {mobileTab === 'reader' && (
-                 <button onClick={() => setMobileTab('input')} className="lg:hidden flex items-center gap-1 text-xs bg-white/10 hover:bg-white/20 px-3 py-1.5 rounded-full transition-colors border border-white/10">
-                    <ArrowLeft size={14}/> <span className="hidden xs:inline">Nhập Link</span>
-                 </button>
-             )}
+      
+      {/* --- MOBILE NAV (BOTTOM) --- */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 h-[60px] bg-white border-t border-slate-200 z-50 flex justify-around items-center px-2 pb-safe shadow-[0_-5px_10px_rgba(0,0,0,0.05)]">
+         <button onClick={() => setMobileTab('input')} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${mobileTab === 'input' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
+             <Home size={20} /> <span className="text-[10px] font-bold">Home</span>
+         </button>
+         <button onClick={() => setMobileTab('reader')} className={`relative flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${mobileTab === 'reader' ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
+             <BookOpen size={20} /> <span className="text-[10px] font-bold">Đọc</span>
+             {chunks.length > 0 && <span className="absolute top-2 right-4 w-2 h-2 bg-red-500 rounded-full border border-white"></span>}
+         </button>
+         <button onClick={() => setShowHistory(true)} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showHistory ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
+             <HistoryIcon size={20} /> <span className="text-[10px] font-bold">Lịch sử</span>
+         </button>
+         <button onClick={() => setShowCache(true)} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showCache ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
+             <CheckCircle2 size={20} /> <span className="text-[10px] font-bold">Kho</span>
+         </button>
+      </div>
 
-             {mobileTab === 'input' && translatedContent && (
-                 <button onClick={() => setMobileTab('reader')} className="lg:hidden flex items-center gap-1 text-xs bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-1.5 rounded-full transition-colors text-emerald-100 border border-emerald-500/30 font-bold animate-pulse">
-                    <span className="hidden xs:inline">Đọc tiếp</span> <BookOpen size={14}/> <ArrowRight size={12}/>
-                 </button>
-             )}
-
-             <div className="relative">
-                <button onClick={() => setShowMainMenu(!showMainMenu)} className={`p-1.5 rounded-full transition-colors hover:bg-white/10 ${showMainMenu ? 'bg-white/20 text-white' : 'text-blue-100'}`} title="Menu"><Menu size={20}/></button>
-                
-                {showMainMenu && (
-                    <div className="absolute top-full right-0 mt-2 w-48 bg-white shadow-xl rounded-xl border border-slate-200 animate-in slide-in-from-top-2 overflow-hidden z-50 py-1">
-                        <button onClick={() => { setShowHistory(true); setShowMainMenu(false); }} className="w-full text-left px-4 py-3 hover:bg-slate-50 text-slate-700 flex items-center gap-3 text-sm font-medium"><HistoryIcon size={16} className="text-blue-500"/> Lịch sử đọc</button>
-                        <button onClick={() => { setShowAppearance(true); setShowMainMenu(false); }} className="w-full text-left px-4 py-3 hover:bg-slate-50 text-slate-700 flex items-center gap-3 text-sm font-medium"><Type size={16} className="text-purple-500"/> Giao diện</button>
-                        <button onClick={() => { setShowApiKeyInput(!showApiKeyInput); setShowMainMenu(false); }} className="w-full text-left px-4 py-3 hover:bg-slate-50 text-slate-700 flex items-center gap-3 text-sm font-medium border-t border-slate-100"><Key size={16} className={apiKeys.some(k => k) ? "text-green-500" : "text-red-500"}/> {apiKeys.filter(k => k).length} API Keys</button>
-                    </div>
-                )}
+      {/* --- SIDEBAR (INPUT & TOOLS) --- */}
+      <div className={`
+         fixed inset-0 z-40 bg-white md:relative md:w-[400px] lg:w-[450px] md:border-r border-slate-200 shadow-xl flex flex-col transition-transform duration-300 md:translate-x-0
+         ${mobileTab === 'input' ? 'translate-x-0' : '-translate-x-full'}
+      `}>
+          {/* Sidebar Header */}
+          <div className="shrink-0 p-4 bg-gradient-to-r from-indigo-700 to-purple-800 text-white shadow-md flex justify-between items-center">
+             <div>
+                <h1 className="text-xl font-bold flex items-center gap-2 tracking-tight"><Sparkles size={20} className="text-yellow-300"/> AI Reader Preview</h1>
+                <p className="text-[10px] text-indigo-200 opacity-80">Convert hán việt sang thuần việt</p>
+             </div>
+             <div className="flex gap-2">
+                <button onClick={() => setShowHistory(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors text-white" title="Lịch sử đọc"><HistoryIcon size={18}/></button>
+                <button onClick={() => setShowCache(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors text-white" title="Kho đã dịch"><CheckCircle2 size={18}/></button>
+                <button onClick={() => setShowApiKeyInput(!showApiKeyInput)} className={`p-2 rounded-full transition-colors text-white ${apiKeys.some(k => k) ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100' : 'bg-red-500/20 hover:bg-red-500/30 text-red-100 animate-pulse'}`} title="API Key"><Key size={18}/></button>
              </div>
           </div>
-        </div>
-        
-        {showApiKeyInput && (
-            <div className="bg-yellow-50 border-b border-yellow-100 p-3 shrink-0">
-                <div className="max-w-3xl mx-auto flex flex-col gap-2 text-sm">
-                    <span className="text-yellow-800 font-medium flex items-center gap-2"><Key size={16}/> Nhập 3 Key (Hệ thống sẽ thử lần lượt nếu bị giới hạn 429):</span>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+
+          {/* Sidebar Scrollable Content */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-4 md:custom-scrollbar pb-24 md:pb-4">
+             {/* API Key Panel */}
+             {showApiKeyInput && (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-3 animate-in fade-in slide-in-from-top-2">
+                    <div className="flex justify-between mb-2"><span className="text-xs font-bold text-yellow-800 uppercase">Cấu hình API Key (Gemini)</span><button onClick={() => setShowApiKeyInput(false)}><X size={14} className="text-yellow-600"/></button></div>
+                    <div className="space-y-2">
                         {apiKeys.map((k, i) => (
-                            <div key={i} className="relative">
-                                <input 
-                                    type="password" 
-                                    placeholder={`API Key ${i + 1}...`} 
-                                    value={k} 
-                                    onChange={(e) => updateKey(i, e.target.value)} 
-                                    className="w-full px-3 py-2 border border-yellow-300 rounded focus:ring-2 focus:ring-yellow-500 focus:border-yellow-500 text-xs" 
-                                />
-                                {k && <button onClick={() => updateKey(i, '')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-red-500"><Trash2 size={12} /></button>}
+                            <div key={i} className="relative flex items-center">
+                                <span className="absolute left-2 text-[10px] font-bold text-slate-400">#{i+1}</span>
+                                <input type="password" value={k} onChange={(e) => updateKey(i, e.target.value)} className="w-full pl-8 pr-8 py-2 text-xs border border-yellow-300 rounded focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500 bg-white" placeholder="Dán API Key vào đây..."/>
+                                {k && <button onClick={() => updateKey(i, '')} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
                             </div>
                         ))}
                     </div>
                 </div>
-            </div>
-        )}
+             )}
 
-        {showHistory && (
-            <div className="absolute top-[60px] right-2 md:right-10 z-50 w-80 bg-white shadow-xl rounded-xl border border-slate-200 animate-in slide-in-from-top-2 overflow-hidden flex flex-col max-h-[80vh]">
-                 <div className="p-3 border-b flex justify-between items-center bg-slate-50"><span className="font-bold text-slate-700 flex items-center gap-2 text-sm"><HistoryIcon size={16}/> Lịch sử đọc</span><button onClick={() => setShowHistory(false)} className="p-1 hover:bg-slate-200 rounded"><X size={16}/></button></div>
-                 <div className="overflow-y-auto p-2 max-h-[60vh]">
-                    {history.length === 0 ? <p className="text-center text-slate-400 py-4 text-sm">Chưa có lịch sử</p> : history.map((h,i) => (
-                        <div key={i} onClick={() => { 
-                            if (h.translatedContent) {
-                                setUrl(h.url);
-                                setInputMode('url');
-                                setContent(""); 
-                                setTranslatedContent(h.translatedContent);
-                                processTranslatedText(h.translatedContent);
-                                setStep(3);
-                                setMobileTab('reader');
-                            } else {
-                                setUrl(h.url); 
-                                setInputMode('url'); 
-                                fetchContent(h.url); 
-                                setMobileTab('reader');
-                            }
-                            setShowHistory(false); 
-                        }} className="p-3 hover:bg-slate-50 rounded cursor-pointer border-b border-slate-100 last:border-0 group transition-colors">
-                            <div className="font-medium text-sm text-slate-700 group-hover:text-indigo-600 line-clamp-2">{h.title}</div>
-                            <div className="text-[10px] text-slate-400 mt-1">{new Date(h.timestamp).toLocaleString('vi-VN')}</div>
-                        </div>
-                    ))}
-                 </div>
-                 {history.length > 0 && <div className="p-2 border-t bg-slate-50 text-center"><button onClick={() => { setHistory([]); localStorage.removeItem('reader_history'); }} className="text-xs text-red-500 hover:text-red-700 font-medium">Xóa lịch sử</button></div>}
-            </div>
-        )}
-
-        {showAppearance && (
-            <div className="absolute top-[60px] right-2 md:right-16 z-50 w-72 bg-white shadow-xl rounded-xl border border-slate-200 animate-in slide-in-from-top-2 p-4">
-                 <div className="flex justify-between items-center mb-4"><span className="font-bold text-slate-700 flex items-center gap-2 text-sm"><Type size={16}/> Giao diện</span><button onClick={() => setShowAppearance(false)} className="p-1 hover:bg-slate-200 rounded"><X size={16}/></button></div>
-                 
-                 <div className="mb-4">
-                    <p className="text-xs text-slate-400 font-bold uppercase mb-2">Màu nền</p>
-                    <div className="flex gap-2">
-                        <button onClick={() => changeTheme('light')} className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all ${theme === 'light' ? 'ring-2 ring-indigo-500 border-transparent bg-[#fffdf5] text-slate-800' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>Sáng</button>
-                        <button onClick={() => changeTheme('sepia')} className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all ${theme === 'sepia' ? 'ring-2 ring-indigo-500 border-transparent bg-[#f4ecd8] text-[#5b4636]' : 'bg-[#f4ecd8] border-slate-200 text-[#5b4636] opacity-60 hover:opacity-100'}`}>Vàng</button>
-                        <button onClick={() => changeTheme('dark')} className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all ${theme === 'dark' ? 'ring-2 ring-indigo-500 border-transparent bg-[#1e1e24] text-slate-300' : 'bg-[#1e1e24] border-slate-200 text-slate-400 opacity-60 hover:opacity-100'}`}>Tối</button>
-                    </div>
-                 </div>
-
-                 <div>
-                    <div className="flex justify-between mb-2"><p className="text-xs text-slate-400 font-bold uppercase">Cỡ chữ</p><span className="text-xs font-bold text-slate-700">{fontSize}px</span></div>
-                    <input type="range" min="14" max="28" step="1" value={fontSize} onChange={(e) => changeFontSize(parseInt(e.target.value))} className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"/>
-                    <div className="flex justify-between text-[10px] text-slate-400 mt-1 select-none"><span>A-</span><span>A+</span></div>
-                 </div>
-            </div>
-        )}
-        <div className="flex-1 overflow-hidden flex flex-col p-2 sm:p-6 gap-4">
-          <div className={`${mobileTab === 'reader' ? 'hidden lg:flex' : 'flex'} flex-col gap-2 h-full lg:w-1/2`}>
-             <div className="flex-col gap-2 shrink-0">
-                <div className="flex gap-2 border-b border-slate-200 mb-2"><button onClick={() => setInputMode('url')} className={`pb-2 text-sm font-medium flex items-center gap-2 flex-1 justify-center ${inputMode === 'url' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500'}`}><Globe size={16}/> Lấy Link</button><button onClick={() => setInputMode('manual')} className={`pb-2 text-sm font-medium flex items-center gap-2 flex-1 justify-center ${inputMode === 'manual' ? 'text-blue-600 border-b-2 border-blue-600' : 'text-slate-500'}`}><Edit3 size={16}/> Thủ công</button></div>
-                <div className="flex gap-2">{inputMode === 'url' ? (<React.Fragment><div className="relative flex-1 group"><input type="text" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Dán link truyện..." className="block w-full px-3 py-2.5 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 shadow-sm" /></div><button onClick={() => fetchContent()} disabled={loading || !url} className="bg-blue-600 hover:bg-blue-700 text-white px-4 rounded-lg font-medium flex items-center justify-center gap-2 disabled:bg-slate-300 shadow-sm min-w-[50px]">{loading ? <RotateCw className="animate-spin" size={20}/> : <Search size={20}/>}</button></React.Fragment>) : (<div className="w-full text-sm text-slate-500 italic py-2 text-center">Dán nội dung vào khung bên dưới</div>)}</div>
+             {/* Mode Switcher */}
+             <div className="flex p-1 bg-slate-100 rounded-xl shadow-inner">
+                 <button onClick={() => setInputMode('url')} className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${inputMode === 'url' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Globe size={16}/> Link Web</button>
+                 <button onClick={() => setInputMode('manual')} className={`flex-1 py-2 rounded-lg text-sm font-bold transition-all flex items-center justify-center gap-2 ${inputMode === 'manual' ? 'bg-white text-indigo-600 shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}><Edit3 size={16}/> Text Gốc</button>
              </div>
-             {error && <div className="shrink-0 bg-red-50 text-red-700 px-4 py-3 rounded-lg text-sm flex gap-2 border border-red-100"><AlertCircle size={16} className="shrink-0 mt-0.5"/> {error}</div>}
-             <div className="flex-1 flex flex-col min-h-0 bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
-                <div className="p-2 border-b border-slate-100 bg-slate-50 flex justify-between items-center rounded-t-lg"><span className="font-semibold text-slate-700 text-sm flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-slate-400"></div> Bản Gốc</span><span className="text-xs text-slate-500 bg-slate-200 px-2 py-0.5 rounded-full">{content.length} ký tự</span></div>
-                <textarea value={content} onChange={(e) => setContent(e.target.value)} readOnly={inputMode === 'url'} className="flex-1 w-full p-4 resize-none focus:outline-none text-slate-600 font-mono text-sm leading-relaxed bg-slate-50/30" placeholder="Nội dung truyện sẽ hiện ở đây..." />
-                <div className="p-3 border-t border-slate-100 lg:hidden"><button onClick={translateContent} disabled={translating || !content} className="w-full flex items-center justify-center gap-2 bg-gradient-to-r from-indigo-600 to-purple-600 text-white py-3 rounded-xl font-bold shadow-lg active:scale-95 transition-transform">{translating ? <React.Fragment><RotateCw className="animate-spin" size={20}/> Đang xử lý...</React.Fragment> : <React.Fragment><Sparkles size={20}/> Dịch Ngay</React.Fragment>}</button></div>
+
+             {/* Input Area */}
+             <div className="space-y-3">
+                 {inputMode === 'url' ? (
+                     <div className="relative group">
+                         <div className="absolute top-2.5 left-3 text-slate-400"><Search size={18}/></div>
+                         <input type="text" value={url} onChange={(e) => setUrl(e.target.value)} placeholder="Dán link chương truyện (metruyencv, wikidich...)" className="w-full pl-10 pr-12 py-3 border border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-2 focus:ring-indigo-200 transition-all font-medium text-sm"/>
+                         <button onClick={() => fetchContent()} disabled={loading} className="absolute right-2 top-1.5 p-1.5 bg-indigo-100 hover:bg-indigo-200 text-indigo-700 rounded-lg transition-colors">{loading ? <RotateCw className="animate-spin" size={16}/> : <ArrowRight size={16}/>}</button>
+                     </div>
+                 ) : (
+                     <div className="text-xs text-slate-400 italic text-center px-4">Dán trực tiếp nội dung chương truyện vào ô bên dưới để dịch.</div>
+                 )}
+
+                 {error && <div className="bg-red-50 border border-red-100 text-red-600 text-xs p-3 rounded-lg flex gap-2 items-start"><AlertCircle size={14} className="shrink-0 mt-0.5"/> {error}</div>}
+
+                 <div className="relative flex flex-col h-64 md:h-[calc(100vh-420px)] border border-slate-200 rounded-xl overflow-hidden bg-white shadow-sm transition-all focus-within:border-indigo-400 focus-within:ring-2 focus-within:ring-indigo-100 ring-offset-2">
+                     <div className="flex justify-between items-center p-2 bg-slate-50 border-b border-slate-100">
+                         <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider pl-2">Nội dung gốc</span>
+                         {content.length > 0 && <span className="text-[10px] bg-indigo-100 text-indigo-700 px-2 py-0.5 rounded-full font-bold">{content.length} chars</span>}
+                     </div>
+                     <textarea 
+                        value={content} 
+                        onChange={(e) => setContent(e.target.value)} 
+                        readOnly={inputMode === 'url'}
+                        placeholder="Nội dung sẽ hiển thị ở đây..."
+                        className="flex-1 w-full p-4 resize-none focus:outline-none text-sm text-slate-600 font-mono leading-relaxed bg-slate-50/50"
+                     />
+                     <button 
+                        onClick={translateContent} 
+                        disabled={translating || !content} 
+                        className={`absolute bottom-4 right-4 shadow-lg flex items-center gap-2 px-6 py-2 rounded-full font-bold text-white transition-all transform active:scale-95 z-10 
+                            ${translating ? 'bg-slate-400 cursor-not-allowed' : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 hover:to-purple-700 hover:shadow-indigo-500/30'}
+                        `}
+                     >
+                        {translating ? <><RotateCw className="animate-spin" size={16}/> Đang dịch...</> : <><Sparkles size={16}/> Dịch Sang Việt</>}
+                     </button>
+                 </div>
              </div>
           </div>
-          <div className="hidden lg:flex flex-col items-center justify-center gap-2 shrink-0"><button onClick={translateContent} disabled={translating || !content} className="group flex items-center justify-center gap-2 bg-gradient-to-br from-indigo-600 to-purple-700 hover:from-indigo-700 text-white px-3 py-8 rounded-full font-bold shadow-lg active:scale-95 lg:w-12 lg:writing-mode-vertical-rl transition-all hover:shadow-indigo-500/50" title="Dịch sang thuần Việt">{translating ? <Sparkles className="animate-spin" size={20} /> : <Sparkles size={20} />} <span className="mt-2 text-xs opacity-80 font-normal">DỊCH</span></button></div>
-          <div className={`${mobileTab === 'input' ? 'hidden lg:flex' : 'flex'} flex-col h-full lg:w-1/2 min-h-0 bg-white lg:rounded-lg rounded-none border-0 lg:border border-slate-200 lg:shadow-sm relative`}>
-              <div className="p-2 border-b border-slate-100 bg-indigo-50/50 flex items-center justify-between gap-2 shrink-0">
-                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar">
-                   <button onClick={() => setShowMobileSettings(!showMobileSettings)} className="lg:hidden p-2 bg-white rounded-full text-slate-600 shadow-sm border border-slate-200"><Settings size={18}/></button>
-
-                   {isAutoMode && nextChapterUrl && (
-                        preloadedData ? 
-                        <div className="flex items-center gap-1 text-[10px] font-bold text-emerald-600 bg-white px-2 py-1.5 rounded-full border border-emerald-200 shadow-sm animate-in fade-in whitespace-nowrap"><CheckCircle2 size={12}/> <span className="hidden xs:inline">Sẵn sàng</span></div> :
-                        <div className="flex items-center gap-1 text-[10px] font-medium text-purple-600 bg-white px-2 py-1.5 rounded-full border border-purple-200 shadow-sm whitespace-nowrap"><RotateCw size={12} className="animate-spin"/> <span className="hidden xs:inline">Đang tải...</span></div>
-                   )}
-
-                   <div className="hidden lg:flex items-center gap-2">
-                       <button onClick={() => setIsAutoMode(!isAutoMode)} className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-bold border transition-all ${isAutoMode ? 'bg-indigo-600 text-white border-indigo-600 shadow-md animate-pulse' : 'bg-white text-slate-500 border-slate-300 hover:bg-slate-50'}`}><InfinityIcon size={14} /> {isAutoMode ? 'Auto' : 'Auto'}</button>
-                       <div className="relative"><button onClick={() => setShowTimerMenu(!showTimerMenu)} className={`flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${timeLeft || autoStopChapterLimit ? 'bg-orange-100 text-orange-700 border-orange-200' : 'bg-white text-slate-500 border-slate-300'}`}>{timeLeft ? <React.Fragment><Timer size={14} className="animate-pulse"/> {formatTime(timeLeft)}</React.Fragment> : autoStopChapterLimit ? <React.Fragment><Hash size={14}/> {autoStopChapterLimit - chaptersReadCount} ch</React.Fragment> : <React.Fragment><Clock size={14}/> Hẹn giờ</React.Fragment>}</button>{showTimerMenu && (<div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 shadow-xl rounded-lg z-50 w-40 py-1 flex flex-col"><div className="px-3 py-1 text-[10px] text-slate-400 font-bold uppercase">Hẹn giờ tắt</div>{[15, 30, 60].map(m => (<button key={m} onClick={() => setTimer(m)} className="px-4 py-2 text-left text-sm hover:bg-slate-50 text-slate-700">{m} phút</button>))}<div className="px-3 py-1 text-[10px] text-slate-400 font-bold uppercase border-t border-slate-100 mt-1">Dừng theo chương</div>{[1, 5, 10].map(c => (<button key={c} onClick={() => setChapterLimit(c)} className="px-4 py-2 text-left text-sm hover:bg-slate-50 text-slate-700">{c} chương</button>))}{(timeLeft || autoStopChapterLimit > 0) && (<button onClick={() => { setTimeLeft(null); setAutoStopChapterLimit(0); setShowTimerMenu(false); }} className="px-4 py-2 text-left text-sm hover:bg-red-50 text-red-600 border-t border-slate-100 font-bold">Tắt hẹn giờ</button>)}</div>)}</div>
-                   </div>
-                </div>
-                <div className="flex items-center gap-2 bg-white px-2 py-1.5 rounded-full border border-indigo-100 shadow-sm ml-auto">
-                   {/* Removed old preloadedData indicator */}
-                   <button onClick={toggleSpeech} disabled={!chunks.length} className="p-2 hover:bg-indigo-100 text-indigo-700 rounded-full transition-colors">{isSpeaking && !isPaused ? <Pause size={20} fill="currentColor"/> : <Play size={20} fill="currentColor"/>}</button>
-                   <button onClick={stopSpeech} disabled={!isSpeaking && !isPaused} className="p-2 hover:bg-red-100 text-red-600 rounded-full transition-colors"><Square size={20} fill="currentColor"/></button>
-                </div>
-              </div>
-              {showMobileSettings && (<div className="lg:hidden absolute top-[50px] left-0 right-0 bg-white border-b border-slate-200 shadow-lg z-30 p-4 animate-in slide-in-from-top-5 grid grid-cols-2 gap-3"><div className="col-span-2 text-xs font-bold text-slate-400 uppercase">Cài đặt đọc</div><button onClick={() => setIsAutoMode(!isAutoMode)} className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-bold border transition-all ${isAutoMode ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-50 text-slate-600 border-slate-200'}`}><InfinityIcon size={16} /> Chế độ Auto {isAutoMode ? 'BẬT' : 'TẮT'}</button><button onClick={() => setShowTimerMenu(!showTimerMenu)} className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${timeLeft || autoStopChapterLimit ? 'bg-orange-100 text-orange-700 border-orange-200' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>{timeLeft ? <React.Fragment><Timer size={16}/> {formatTime(timeLeft)}</React.Fragment> : autoStopChapterLimit ? <React.Fragment><Hash size={16}/> Dừng sau {autoStopChapterLimit} chương</React.Fragment> : <React.Fragment><Clock size={16}/> Hẹn giờ tắt</React.Fragment>}</button>{showTimerMenu && <div className="col-span-2 grid grid-cols-3 gap-2 pb-2"><div className="col-span-3 text-[10px] text-slate-400 font-bold uppercase">Hẹn giờ (phút)</div>{[15, 30, 60].map(m => (<button key={m} onClick={() => setTimer(m)} className="px-2 py-1 bg-slate-100 rounded text-xs">{m}p</button>))}<div className="col-span-3 text-[10px] text-slate-400 font-bold uppercase mt-2">Dừng sau (chương)</div>{[1, 5, 10].map(c => (<button key={c} onClick={() => setChapterLimit(c)} className="px-2 py-1 bg-slate-100 rounded text-xs">{c} chương</button>))}{(timeLeft || autoStopChapterLimit > 0) && <button onClick={() => {setTimeLeft(null); setAutoStopChapterLimit(0); setShowTimerMenu(false); setShowMobileSettings(false);}} className="col-span-3 px-3 py-2 bg-red-100 text-red-600 rounded text-xs font-bold mt-2">Tắt Hẹn Giờ</button>}</div>}<div className="col-span-2 mt-2 text-xs font-bold text-slate-400 uppercase flex justify-between items-center"><span>Giọng đọc & Tốc độ</span><span className="text-[10px] text-slate-400 font-normal">{voiceDebugMsg}</span></div><div className="col-span-2 flex items-center gap-2 bg-slate-50 p-2 rounded-lg border border-slate-200"><select className="flex-1 text-sm bg-transparent focus:outline-none text-slate-700 py-1" onChange={handleVoiceChange} value={selectedVoice?.name || ""}>{voices.length === 0 && <option>Đang tải giọng...</option>}{voices.length > 0 && voices.filter(v => v.lang.includes('vi') || v.lang.includes('VN')).length === 0 && <option>Không tìm thấy giọng Việt</option>}{voices.map(v => <option key={v.name} value={v.name}>{formatVoiceName(v.name)}</option>)}</select><button onClick={wakeUpSpeechEngine} className="p-2 bg-white rounded shadow-sm border border-slate-300 active:bg-slate-100" title="Thử tải lại giọng"><RefreshCw size={14}/></button></div><div className="col-span-2 flex items-center gap-3 bg-slate-50 p-2 rounded-lg border border-slate-200"><span className="text-xs font-bold text-slate-500 w-8">{speechRate}x</span><input type="range" min="0.5" max="2.0" step="0.1" value={speechRate} onChange={handleRateChange} className="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"/></div><div className="col-span-2 mt-2 text-xs font-bold text-slate-400 uppercase">Tiện ích AI</div><button onClick={() => {analyzeContent('summary'); setShowMobileSettings(false);}} className="flex items-center justify-center gap-2 px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-sm"><FileText size={16}/> Tóm tắt chương</button><button onClick={() => {analyzeContent('explain'); setShowMobileSettings(false);}} className="flex items-center justify-center gap-2 px-3 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-sm"><HelpCircle size={16}/> Giải thích từ khó</button></div>)}
-              <div className={`flex-1 relative overflow-hidden transition-colors duration-300 ${theme === 'dark' ? 'bg-[#1e1e24]' : theme === 'sepia' ? 'bg-[#f4ecd8]' : 'bg-[#fffdf5]'}`}>
-                 {analysisType && (<div className="absolute inset-x-0 bottom-0 bg-white border-t border-slate-200 shadow-[0_-5px_20px_-5px_rgba(0,0,0,0.1)] z-20 flex flex-col max-h-[60%] animate-in slide-in-from-bottom-10 rounded-t-2xl"><div className="flex justify-between p-3 bg-slate-50 border-b rounded-t-2xl"><span className="font-bold text-sm text-slate-700 flex items-center gap-2"><Sparkles size={16} className="text-purple-500"/> AI Phân Tích</span><button onClick={() => setAnalysisType(null)} className="p-1 bg-slate-200 rounded-full"><X size={16}/></button></div><div className="p-5 overflow-y-auto text-sm leading-loose text-slate-700 whitespace-pre-line font-medium">{analyzing ? <span className="flex items-center gap-2 text-slate-500"><RotateCw className="animate-spin" size={16}/> Đang suy nghĩ...</span> : analysisResult}</div></div>)}
-                 {translating && <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/90 z-10 backdrop-blur-sm"><div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-3"></div><p className="text-sm font-medium text-indigo-600 animate-pulse">Đang dịch & chuẩn bị đọc...</p></div>}
-                 <div ref={containerRef} onScroll={handleScroll} className={`h-full overflow-y-auto p-4 md:p-8 font-literata leading-loose pb-32 scroll-smooth ${theme === 'dark' ? 'text-slate-300' : theme === 'sepia' ? 'text-[#433422]' : 'text-slate-800'}`} style={{ fontSize: `${fontSize}px` }}>
-                    {chunks.length > 0 ? (
-                        <React.Fragment>
-                            {chunks.map((chunk, index) => (
-                                <ParagraphItem key={index} index={index} text={chunk} isActive={activeChunkIndex === index} activeCharIndex={activeChunkIndex === index ? activeCharIndex : null} onClick={jumpToChunk} setRef={(el: any) => chunkRefs.current[index] = el} />
-                            ))}
-                            <div className="mt-12 flex flex-col gap-3 pt-6 border-t border-slate-200 border-dashed pb-10">
-                                <div className="flex justify-between items-center w-full">
-                                    {prevChapterUrl ? <button onClick={() => loadChapter(prevChapterUrl)} className="text-slate-600 hover:text-blue-600 flex items-center gap-1 px-4 py-3 bg-slate-100 hover:bg-slate-200 rounded-xl transition-colors font-medium text-sm"><ChevronLeft size={18}/> Chương trước</button> : <div/>}
-                                    {nextChapterUrl ? (<button onClick={() => loadChapter(nextChapterUrl)} className={`flex-1 ml-4 px-4 py-3 rounded-xl font-bold shadow-md flex items-center justify-center gap-2 transform transition hover:scale-[1.02] active:scale-95 ${isAutoMode ? 'bg-gradient-to-r from-purple-600 to-indigo-600 text-white animate-pulse' : 'bg-indigo-600 text-white'}`}>{isAutoMode ? 'Auto chuyển...' : 'Chương tiếp'} <ChevronRight size={18}/></button>) : <span className="text-slate-400 italic text-sm">Hết chương</span>}
-                                </div>
-                            </div>
-                        </React.Fragment>
-                    ) : (<div className="h-full flex flex-col items-center justify-center text-slate-400 gap-2"><BookOpen size={48} className="opacity-20"/><span className="italic">Chưa có nội dung...</span></div>)}
-                 </div>
-              </div>
-          </div>
-        </div>
       </div>
+
+      {/* --- READER MAIN AREA --- */}
+      <div className={`
+         fixed inset-0 z-30 md:static bg-slate-50 flex flex-col transition-transform duration-300 md:translate-x-0
+         ${mobileTab === 'reader' ? 'translate-x-0' : 'translate-x-full'}
+      `}>
+         {/* Reader Toolbar */}
+         <div className="h-16 bg-white border-b border-slate-200 shadow-sm flex items-center justify-between px-4 shrink-0 relative z-20">
+             <div className="flex flex-col">
+                <span className="font-bold text-slate-700 text-sm line-clamp-1 max-w-[200px] md:max-w-md">Trình đọc AI</span>
+                {isAutoMode ? (
+                    preloadedData ? 
+                    <span className="text-[10px] text-emerald-600 font-medium flex items-center gap-1"><CheckCircle2 size={10}/> Sẵn sàng chương sau</span> :
+                    <span className="text-[10px] text-orange-500 font-medium flex items-center gap-1"><RotateCw size={10} className="animate-spin"/> Đang tải chương sau...</span>
+                ) : (
+                    translatedContent && <span className="text-[10px] text-emerald-600 font-medium flex items-center gap-1"><CheckCircle2 size={10}/> Đã dịch xong</span>
+                )}
+            </div>
+
+             <div className="flex items-center gap-2 md:gap-4">
+                 {/* Desktop Audio Controls */}
+                 <div className="hidden md:flex bg-slate-100 rounded-full p-1 items-center gap-1 border border-slate-200">
+                    <button onClick={toggleSpeech} disabled={!chunks.length} className={`p-2 rounded-full transition-colors ${isSpeaking && !isPaused ? 'bg-indigo-100 text-indigo-600' : 'hover:bg-white text-slate-600'}`}>{isSpeaking && !isPaused ? <Pause size={18}/> : <Play size={18}/>}</button>
+                    <button onClick={stopSpeech} disabled={!isSpeaking && !isPaused} className="p-2 hover:bg-white text-slate-600 rounded-full transition-colors"><Square size={18}/></button>
+                    <div className="w-px h-4 bg-slate-300 mx-1"></div>
+                    <button onClick={() => setIsAutoMode(!isAutoMode)} className={`px-3 py-1.5 text-xs font-bold rounded-full transition-all flex items-center gap-1 ${isAutoMode ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:bg-white'}`}><InfinityIcon size={14}/> Auto</button>
+                 </div>
+                 
+                 {/* Theme & Settings Trigger */}
+                 <div className="flex items-center gap-2">
+                    <button onClick={() => setShowAppearance(!showAppearance)} className="p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Giao diện"><Palette size={20}/></button>
+                    <button onClick={() => setShowMobileSettings(true)} className="md:hidden p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors"><Settings size={20}/></button>
+                 </div>
+             </div>
+         </div>
+
+         {/* Reading Content */}
+         <div className={`flex-1 relative overflow-hidden transition-colors duration-500 ${theme === 'dark' ? 'bg-[#1a1b26]' : theme === 'sepia' ? 'bg-[#f8f4e5]' : 'bg-white'}`}>
+             {/* Text Render */}
+             <div 
+                ref={containerRef} 
+                onScroll={handleScroll}
+                className={`
+                    w-full h-full overflow-y-auto p-5 md:p-12 pb-32 md:pb-20 scroll-smooth custom-scrollbar
+                    ${theme === 'dark' ? 'text-slate-300' : theme === 'sepia' ? 'text-[#5b4636]' : 'text-slate-800'}
+                `}
+                style={{ fontSize: `${fontSize}px`, fontFamily: "'Literata', serif", lineHeight: "1.8" }}
+             >
+                {chunks.length > 0 ? (
+                    <div className="max-w-3xl mx-auto">
+                        {chunks.map((chunk, index) => (
+                            <ParagraphItem key={index} index={index} text={chunk} isActive={activeChunkIndex === index} activeCharIndex={activeChunkIndex === index ? activeCharIndex : null} onClick={jumpToChunk} setRef={(el: any) => chunkRefs.current[index] = el} />
+                        ))}
+
+                        <div className="mt-16 flex flex-col items-center gap-4 py-8 border-t border-dashed border-slate-300/30">
+                            <div className="flex w-full gap-4 max-w-md">
+                                {prevChapterUrl && <button onClick={() => loadChapter(prevChapterUrl)} className="flex-1 py-3 px-4 bg-slate-100 hover:bg-slate-200 rounded-xl text-sm font-bold text-slate-700 transition-colors flex items-center justify-center gap-2"><ChevronLeft size={16}/> Trước</button>}
+                                {nextChapterUrl ? (
+                                    <button 
+                                        onClick={() => loadChapter(nextChapterUrl)} 
+                                        className={`flex-1 py-3 px-4 rounded-xl text-sm font-bold text-white transition-all shadow-lg flex items-center justify-center gap-2 transform active:scale-95 ${isAutoMode ? 'bg-gradient-to-r from-purple-600 to-indigo-600 animate-pulse' : 'bg-indigo-600 hover:bg-indigo-700'}`}
+                                    >
+                                        {isAutoMode ? 'Đang Auto...' : 'Chương Sau'} <ChevronRight size={16}/>
+                                    </button>
+                                ) : <div className="flex-1 text-center text-slate-400 italic text-sm py-2">Hết chương</div>}
+                            </div>
+                        </div>
+                    </div>
+                ) : (
+                    <div className="h-full flex flex-col items-center justify-center gap-4 text-slate-300 select-none">
+                        <BookOpen size={64} className="opacity-20"/>
+                        <p className="text-lg font-medium opacity-50">Chọn nội dung để bắt đầu đọc</p>
+                    </div>
+                )}
+             </div>
+
+             {/* Translator loading overlay */}
+             {translating && (
+                <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-white/80 backdrop-blur-sm">
+                    <div className="relative">
+                        <div className="w-16 h-16 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+                        <Sparkles className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 text-indigo-600 animate-pulse" size={24}/>
+                    </div>
+                    <p className="mt-4 text-indigo-800 font-bold animate-pulse">Đang dịch thuật...</p>
+                    <p className="text-xs text-indigo-400 max-w-xs text-center mt-2">AI đang xử lý ngôn ngữ tự nhiên để tạo bản dịch mượt mà nhất.</p>
+                </div>
+             )}
+
+             {/* AI Analysis Result Panel */}
+             {analysisType && (
+                 <div className="absolute bottom-0 left-0 right-0 max-h-[70%] bg-white border-t border-slate-200 shadow-[0_-10px_40px_rgba(0,0,0,0.1)] rounded-t-2xl z-40 flex flex-col animate-in slide-in-from-bottom-10">
+                     <div className="p-3 border-b flex justify-between items-center bg-slate-50 rounded-t-2xl">
+                         <span className="font-bold text-indigo-700 flex items-center gap-2"><Sparkles size={16}/> AI Phân Tích</span>
+                         <button onClick={() => setAnalysisType(null)}><X size={20} className="text-slate-400 hover:text-red-500"/></button>
+                     </div>
+                     <div className="p-5 overflow-y-auto text-sm leading-7 text-slate-700 whitespace-pre-line font-serif">
+                         {analyzing ? <div className="flex items-center gap-2 text-slate-500 italic"><RotateCw className="animate-spin" size={16}/> Đang suy nghĩ...</div> : analysisResult}
+                     </div>
+                 </div>
+             )}
+         </div>
+      </div>
+
+      {/* --- MODALS & MENUS --- */}
+
+      {/* Settings Modal (Mobile & Desktop Unified for simplicity) */}
+      {(showMobileSettings || showAppearance) && (
+          <div className="fixed inset-0 z-[60] flex items-end md:items-center justify-center sm:p-4">
+              <div onClick={() => { setShowMobileSettings(false); setShowAppearance(false); }} className="absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity"></div>
+              <div className="bg-white w-full md:w-96 rounded-t-2xl md:rounded-2xl border-t md:border border-slate-200 shadow-2xl z-10 overflow-hidden animate-in slide-in-from-bottom-10 md:slide-in-from-bottom-0 md:zoom-in-95">
+                  <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
+                      <span className="font-bold text-lg text-slate-800 flex items-center gap-2"><Settings size={20} className="text-slate-500"/> Cài đặt</span>
+                      <button onClick={() => { setShowMobileSettings(false); setShowAppearance(false); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={20}/></button>
+                  </div>
+                  <div className="p-4 space-y-6 max-h-[70vh] overflow-y-auto">
+                      {/* Theme */}
+                      <div>
+                          <label className="text-xs font-bold text-slate-400 uppercase mb-3 block">Giao diện đọc</label>
+                          <div className="grid grid-cols-3 gap-3">
+                              <button onClick={() => changeTheme('light')} className={`py-3 rounded-xl border flex flex-col items-center gap-1 transition-all ${theme === 'light' ? 'border-indigo-500 bg-indigo-50 text-indigo-700 ring-1 ring-indigo-500' : 'border-slate-200 hover:bg-slate-50 text-slate-600'}`}>
+                                  <div className="w-6 h-6 rounded-full bg-white border border-slate-200 shadow-sm"></div>
+                                  <span className="text-xs font-medium">Sáng</span>
+                              </button>
+                              <button onClick={() => changeTheme('sepia')} className={`py-3 rounded-xl border flex flex-col items-center gap-1 transition-all ${theme === 'sepia' ? 'border-amber-500 bg-[#fff8e1] text-amber-800 ring-1 ring-amber-500' : 'border-slate-200 hover:bg-[#fff8e1]/50 text-slate-600'}`}>
+                                  <div className="w-6 h-6 rounded-full bg-[#f8f4e5] border border-amber-200 shadow-sm"></div>
+                                  <span className="text-xs font-medium">Vàng</span>
+                              </button>
+                              <button onClick={() => changeTheme('dark')} className={`py-3 rounded-xl border flex flex-col items-center gap-1 transition-all ${theme === 'dark' ? 'border-indigo-500 bg-[#1e1e24] text-indigo-300 ring-1 ring-indigo-500' : 'border-slate-200 hover:bg-slate-100 text-slate-600'}`}>
+                                  <div className="w-6 h-6 rounded-full bg-[#1e1e24] border border-slate-600 shadow-sm"></div>
+                                  <span className="text-xs font-medium">Tối</span>
+                              </button>
+                          </div>
+                      </div>
+
+                      {/* Font Size */}
+                      <div>
+                          <div className="flex justify-between mb-2">
+                              <label className="text-xs font-bold text-slate-400 uppercase">Cỡ chữ</label>
+                              <span className="text-xs font-bold text-indigo-600 bg-indigo-50 px-2 rounded">{fontSize}px</span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                              <span className="text-sm font-literata">Aa</span>
+                              <input type="range" min="14" max="32" step="1" value={fontSize} onChange={(e) => changeFontSize(parseInt(e.target.value))} className="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"/>
+                              <span className="text-xl font-literata">Aa</span>
+                          </div>
+                      </div>
+
+                      {/* Audio Settings */}
+                      <div className="pt-4 border-t border-slate-100">
+                          <div className="flex justify-between items-center mb-3">
+                              <label className="text-xs font-bold text-slate-400 uppercase">Giọng đọc & Audio</label>
+                              <span className="text-[10px] text-slate-400 max-w-[150px] truncate">{voiceDebugMsg}</span>
+                          </div>
+                          <div className="space-y-4">
+                              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                                  <select className="w-full bg-transparent text-sm focus:outline-none text-slate-700" onChange={handleVoiceChange} value={selectedVoice?.name || ""}>
+                                      {voices.length === 0 ? <option>Đang tải giọng...</option> : 
+                                       voices.map(v => <option key={v.name} value={v.name}>{formatVoiceName(v.name)} ({v.lang})</option>)}
+                                  </select>
+                              </div>
+                              <div className="flex items-center gap-3">
+                                  <span className="text-xs font-bold text-slate-500">Tốc độ</span>
+                                  <input type="range" min="0.5" max="2.0" step="0.1" value={speechRate} onChange={handleRateChange} className="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"/>
+                                  <span className="text-xs font-bold text-slate-700 w-8 text-right">{speechRate}x</span>
+                              </div>
+                              
+                              <div className="flex gap-2">
+                                  <button onClick={toggleSpeech} className="flex-1 py-2 bg-indigo-100 text-indigo-700 rounded-lg text-sm font-bold flex items-center justify-center gap-2">
+                                      {isSpeaking && !isPaused ? <Pause size={16}/> : <Play size={16}/>} {isSpeaking && !isPaused ? 'Tạm dừng' : 'Đọc Ngay'}
+                                  </button>
+                                  <button onClick={stopSpeech} className="px-4 py-2 bg-red-100 text-red-600 rounded-lg shadow-sm"><Square size={16}/></button>
+                              </div>
+                          </div>
+                      </div>
+
+                      {/* Auto & Timer */}
+                      <div className="pt-4 border-t border-slate-100">
+                          <label className="text-xs font-bold text-slate-400 uppercase mb-3 block">Tự động</label>
+                          <div className="flex flex-col gap-3">
+                               <button onClick={() => setIsAutoMode(!isAutoMode)} className={`flex items-center justify-between p-3 rounded-xl border transition-all ${isAutoMode ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+                                   <div className="flex items-center gap-3">
+                                       <div className={`p-2 rounded-full ${isAutoMode ? 'bg-indigo-500 text-white' : 'bg-slate-200 text-slate-500'}`}><InfinityIcon size={18}/></div>
+                                       <div className="text-left">
+                                           <div className={`text-sm font-bold ${isAutoMode ? 'text-indigo-900' : 'text-slate-700'}`}>Tự động chuyển chương</div>
+                                           <div className="text-[10px] text-slate-400">Tự động dịch và đọc chương tiếp theo</div>
+                                       </div>
+                                   </div>
+                                   <div className={`w-10 h-6 rounded-full p-1 transition-colors ${isAutoMode ? 'bg-indigo-500' : 'bg-slate-300'}`}>
+                                       <div className={`w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${isAutoMode ? 'translate-x-4' : 'translate-x-0'}`}></div>
+                                   </div>
+                               </button>
+
+                               {/* Timer presets */}
+                               <div className="grid grid-cols-4 gap-2">
+                                   {[15, 30, 45, 60].map(m => (
+                                       <button key={m} onClick={() => setTimer(m)} className="py-2 text-xs font-bold bg-slate-50 hover:bg-indigo-50 text-slate-600 hover:text-indigo-600 rounded-lg border border-slate-200">{m}p</button>
+                                   ))}
+                               </div>
+                               <div className="grid grid-cols-3 gap-2">
+                                    {[1, 5, 10].map(c => (
+                                        <button key={c} onClick={() => setChapterLimit(c)} className="py-2 text-xs font-bold bg-slate-50 hover:bg-purple-50 text-slate-600 hover:text-purple-600 rounded-lg border border-slate-200">Stop {c} ch</button>
+                                    ))}
+                               </div>
+                               {(timeLeft || autoStopChapterLimit > 0) && (
+                                   <div className="p-3 bg-orange-50 text-orange-800 rounded-xl text-xs font-bold flex justify-between items-center border border-orange-100">
+                                       <span>{timeLeft ? `Dừng sau ${formatTime(timeLeft)}` : `Dừng sau ${autoStopChapterLimit - chaptersReadCount} chương`}</span>
+                                       <button onClick={() => { setTimeLeft(null); setAutoStopChapterLimit(0); }} className="text-red-500 hover:underline">Hủy</button>
+                                   </div>
+                               )}
+                          </div>
+                      </div>
+                      
+                      {/* AI Utilities */}
+                      <div className="pt-4 border-t border-slate-100 grid grid-cols-2 gap-3">
+                          <button onClick={() => {analyzeContent('summary'); setShowMobileSettings(false);}} className="flex flex-col items-center gap-2 p-3 bg-emerald-50 text-emerald-800 rounded-xl border border-emerald-100 hover:shadow-sm">
+                              <FileText size={20}/> <span className="text-xs font-bold">Tóm tắt chương</span>
+                          </button>
+                          <button onClick={() => {analyzeContent('explain'); setShowMobileSettings(false);}} className="flex flex-col items-center gap-2 p-3 bg-blue-50 text-blue-800 rounded-xl border border-blue-100 hover:shadow-sm">
+                              <HelpCircle size={20}/> <span className="text-xs font-bold">Giải nghĩa từ</span>
+                          </button>
+                      </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* History Modal */}
+      {showHistory && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col animate-in zoom-in-95">
+                   <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl">
+                       <h3 className="font-bold text-slate-800 flex items-center gap-2"><HistoryIcon size={20}/> Lịch sử</h3>
+                       <button onClick={() => setShowHistory(false)} className="p-1 hover:bg-slate-200 rounded-full"><X size={20}/></button>
+                   </div>
+                   <div className="flex-1 overflow-y-auto p-2">
+                       {history.length === 0 ? <p className="text-center text-slate-400 py-8 text-sm italic">Chưa xem truyện nào gần đây.</p> : history.map((h,i) => (
+                           <div key={i} onClick={() => { 
+                               // History click logic: check cache first (should be logic inside cache check now, but let's explicity call loadChapter if URL exists)
+                               if (h.url) {
+                                   loadChapter(h.url);
+                               }
+                               setShowHistory(false); 
+                           }} className="p-3 hover:bg-indigo-50 rounded-xl cursor-pointer border-b border-slate-50 last:border-0 group transition-colors flex gap-3">
+                               <div className="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold shrink-0">{i+1}</div>
+                               <div className="flex-1 min-w-0">
+                                   <div className="font-bold text-sm text-slate-700 truncate group-hover:text-indigo-700">{h.title}</div>
+                                   <div className="text-[10px] text-slate-400 mt-1">{new Date(h.timestamp).toLocaleString('vi-VN')}</div>
+                               </div>
+                           </div>
+                       ))}
+                   </div>
+                   {history.length > 0 && <div className="p-3 border-t bg-slate-50 rounded-b-2xl text-center"><button onClick={() => { setHistory([]); localStorage.removeItem('reader_history'); }} className="text-xs text-red-500 hover:text-red-700 font-bold uppercase tracking-wide">Xóa tất cả</button></div>}
+               </div>
+          </div>
+      )}
+
+      {/* Translated Cache Modal (New) */}
+      {showCache && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col animate-in zoom-in-95">
+                   <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl">
+                       <h3 className="font-bold text-slate-800 flex items-center gap-2 text-emerald-600"><CheckCircle2 size={20}/> Kho đã dịch</h3>
+                       <button onClick={() => setShowCache(false)} className="p-1 hover:bg-slate-200 rounded-full"><X size={20}/></button>
+                   </div>
+                   <div className="flex-1 overflow-y-auto p-2">
+                       {translatedChapters.length === 0 ? <p className="text-center text-slate-400 py-8 text-sm italic">Chưa có bản dịch nào được lưu.</p> : translatedChapters.map((h,i) => (
+                           <div key={i} onClick={() => { 
+                               loadChapter(h.url);
+                               setShowCache(false); 
+                           }} className="p-3 hover:bg-emerald-50 rounded-xl cursor-pointer border-b border-slate-50 last:border-0 group transition-colors flex gap-3">
+                               <div className="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-600 font-bold shrink-0"><FileText size={18}/></div>
+                               <div className="flex-1 min-w-0">
+                                   <div className="font-bold text-sm text-slate-700 truncate group-hover:text-emerald-700">{h.title}</div>
+                                   <div className="text-[10px] text-slate-400 mt-1 flex items-center gap-1"><Clock size={10}/> {new Date(h.timestamp).toLocaleString('vi-VN')}</div>
+                               </div>
+                           </div>
+                       ))}
+                   </div>
+                   {translatedChapters.length > 0 && <div className="p-3 border-t bg-slate-50 rounded-b-2xl text-center"><button onClick={() => { setTranslatedChapters([]); localStorage.removeItem('reader_translated_cache'); }} className="text-xs text-red-500 hover:text-red-700 font-bold uppercase tracking-wide">Xóa bộ nhớ đệm</button></div>}
+               </div>
+          </div>
+      )}
+
     </div>
   );
 }
