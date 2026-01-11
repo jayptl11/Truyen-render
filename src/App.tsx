@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, memo, useCallback } from 'react';
-import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Play, Pause, Square, Edit3, Globe, RefreshCw, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, Clock, Timer, Settings, ArrowLeft, CheckCircle2, Hash } from 'lucide-react';
+import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Play, Pause, Square, Edit3, Globe, RefreshCw, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, Clock, Timer, Settings, ArrowLeft, CheckCircle2, Hash, History as HistoryIcon, Type, Menu } from 'lucide-react';
 
 // --- SUB-COMPONENT: PARAGRAPH RENDERER ---
 const ParagraphItem = memo(({ text, isActive, activeCharIndex, onClick, index, setRef }: any) => {
@@ -99,6 +99,14 @@ export default function StoryFetcher() {
   const [preloadedData, setPreloadedData] = useState<any>(null);
   const [isPreloading, setIsPreloading] = useState(false);
 
+  // --- NEW FEATURES STATES ---
+  const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>('light');
+  const [fontSize, setFontSize] = useState(18);
+  const [history, setHistory] = useState<any[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showAppearance, setShowAppearance] = useState(false);
+  const [showMainMenu, setShowMainMenu] = useState(false);
+
   const activeUtterancesRef = useRef<Set<SpeechSynthesisUtterance>>(new Set());
   const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
   const currentChunkIndexRef = useRef(0);
@@ -123,7 +131,41 @@ export default function StoryFetcher() {
          if (oldKey) { setApiKeys([oldKey, '', '']); localStorage.setItem('gemini_api_keys', JSON.stringify([oldKey, '', ''])); }
          else setShowApiKeyInput(true);
     }
+    
+    // Load Settings & History
+    const savedTheme = localStorage.getItem('reader_theme') as any;
+    if (savedTheme) setTheme(savedTheme);
+    const savedSize = localStorage.getItem('reader_font_size');
+    if (savedSize) setFontSize(parseInt(savedSize));
+    const savedHistory = localStorage.getItem('reader_history');
+    if (savedHistory) {
+        try { setHistory(JSON.parse(savedHistory)); } catch {}
+    }
   }, []);
+
+  const saveToHistory = (url: string, contentSnippet: string) => {
+      if (!url) return;
+      // Extract title from content or url
+      let title = "Chương không tên";
+      const lines = contentSnippet.split('\n');
+      if (lines.length > 0) title = lines[0].substring(0, 50);
+      else title = url.split('/').pop() || "Link";
+
+      const newItem = { url, title, translatedContent: contentSnippet, timestamp: Date.now() };
+      const newHistory = [newItem, ...history.filter(h => h.url !== url)].slice(0, 20); // Keep last 20
+      setHistory(newHistory);
+      localStorage.setItem('reader_history', JSON.stringify(newHistory));
+  };
+
+  const changeTheme = (t: 'light' | 'dark' | 'sepia') => {
+      setTheme(t);
+      localStorage.setItem('reader_theme', t);
+  };
+
+  const changeFontSize = (s: number) => {
+      setFontSize(s);
+      localStorage.setItem('reader_font_size', s.toString());
+  };
 
   // --- VOICE LOADING LOGIC ---
   const loadVoices = useCallback(() => {
@@ -256,6 +298,7 @@ export default function StoryFetcher() {
   };
 
   const fetchTranslation = async (text: string) => {
+      // GEMINI LOGIC
       const validKeys = apiKeys.filter(k => k && k.trim().length > 0);
       if (validKeys.length === 0) throw new Error("Cần nhập ít nhất 1 API Key.");
       
@@ -370,6 +413,7 @@ export default function StoryFetcher() {
     };
 
     utterance.onend = () => {
+         if (!activeUtterancesRef.current.has(utterance)) return;
          activeUtterancesRef.current.delete(utterance);
          setActiveCharIndex(null);
          
@@ -388,6 +432,7 @@ export default function StoryFetcher() {
     };
 
     utterance.onerror = (e) => {
+         if (!activeUtterancesRef.current.has(utterance)) return;
          activeUtterancesRef.current.delete(utterance);
          if (e.error !== 'interrupted' && e.error !== 'canceled') {
              console.error('Speech error', e);
@@ -426,9 +471,19 @@ export default function StoryFetcher() {
   const toggleSpeech = useCallback(() => {
     if (voices.length === 0) wakeUpSpeechEngine();
     if (!chunks.length) return;
-    if (isSpeaking && !isPaused) { window.speechSynthesis.pause(); setIsPaused(true); } 
-    else if (isPaused) { window.speechSynthesis.resume(); setIsPaused(false); } 
+    if (isSpeaking && !isPaused) { 
+        // Force Pause (actually Cancel + Save State)
+        activeUtterancesRef.current.clear();
+        window.speechSynthesis.cancel();
+        setIsPaused(true); 
+    } 
+    else if (isPaused) { 
+        // Resume from current pos
+        setIsPaused(false); 
+        speakNextChunk();
+    } 
     else { 
+        // Start fresh or from existing index (if stopped/reset)
         window.speechSynthesis.cancel(); 
         setIsSpeaking(true); setIsPaused(false); 
         if (currentChunkIndexRef.current >= chunks.length) currentChunkIndexRef.current = 0; 
@@ -472,6 +527,8 @@ export default function StoryFetcher() {
   const analyzeContent = async (type: 'summary' | 'explain') => {
     if (!translatedContent && !content) return;
     const textToAnalyze = translatedContent || content; 
+    
+    // GEMINI LOGIC
     const validKeys = apiKeys.filter(k => k.trim());
     if (validKeys.length === 0) { setError('Cần nhập API Key.'); setShowApiKeyInput(true); return; }
     setAnalyzing(true); setAnalysisType(type); setAnalysisResult('');
@@ -500,7 +557,8 @@ export default function StoryFetcher() {
       setApiKeys(newKeys);
       localStorage.setItem('gemini_api_keys', JSON.stringify(newKeys));
   };
-  // const clearKey removed, used updateKey(i, '')
+  
+
 
   const fetchContent = async (overrideUrl?: string) => {
     const urlToFetch = overrideUrl || url;
@@ -520,11 +578,17 @@ export default function StoryFetcher() {
   };
 
   const translateContent = async () => {
-    if (!content) return; if (apiKeys.filter(k => k.trim()).length === 0) { setError('Cần nhập API Key.'); setShowApiKeyInput(true); return; }
+    if (!content) return; 
+    
+    if (apiKeys.filter(k => k.trim()).length === 0) {
+        setError('Cần nhập API Key.'); setShowApiKeyInput(true); return;
+    }
+
     setTranslating(true); setError(''); stopSpeech(); setChunks([]); setAnalysisType(null);
     try {
       const translated = await fetchTranslation(content);
       setTranslatedContent(translated); processTranslatedText(translated); setStep(3); setMobileTab('reader');
+      saveToHistory(url || nextChapterUrl || "", translated);
     } catch (err: any) { setError(err.message || 'Lỗi khi gọi AI.'); } finally { setTranslating(false); }
   };
 
@@ -559,18 +623,27 @@ export default function StoryFetcher() {
                     <ArrowLeft size={14}/> <span className="hidden xs:inline">Nhập Link</span>
                  </button>
              )}
-             
+
              {mobileTab === 'input' && translatedContent && (
-                 <button onClick={() => setMobileTab('reader')} className="lg:hidden flex items-center gap-1 text-xs bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-1.5 rounded-full transition-colors text-emerald-100 border border-emerald-500/30">
+                 <button onClick={() => setMobileTab('reader')} className="lg:hidden flex items-center gap-1 text-xs bg-emerald-500/20 hover:bg-emerald-500/30 px-3 py-1.5 rounded-full transition-colors text-emerald-100 border border-emerald-500/30 font-bold animate-pulse">
                     <span className="hidden xs:inline">Đọc tiếp</span> <BookOpen size={14}/> <ArrowRight size={12}/>
                  </button>
              )}
 
-             <button onClick={() => setShowApiKeyInput(!showApiKeyInput)} className={`text-xs flex items-center gap-1 px-3 py-1.5 rounded-full transition-colors ${apiKeys.some(k => k) ? 'bg-green-500/20 text-green-100' : 'bg-red-500/20 text-red-100'}`}>
-                <Key size={14} /> {apiKeys.filter(k => k).length} Key
-             </button>
+             <div className="relative">
+                <button onClick={() => setShowMainMenu(!showMainMenu)} className={`p-1.5 rounded-full transition-colors hover:bg-white/10 ${showMainMenu ? 'bg-white/20 text-white' : 'text-blue-100'}`} title="Menu"><Menu size={20}/></button>
+                
+                {showMainMenu && (
+                    <div className="absolute top-full right-0 mt-2 w-48 bg-white shadow-xl rounded-xl border border-slate-200 animate-in slide-in-from-top-2 overflow-hidden z-50 py-1">
+                        <button onClick={() => { setShowHistory(true); setShowMainMenu(false); }} className="w-full text-left px-4 py-3 hover:bg-slate-50 text-slate-700 flex items-center gap-3 text-sm font-medium"><HistoryIcon size={16} className="text-blue-500"/> Lịch sử đọc</button>
+                        <button onClick={() => { setShowAppearance(true); setShowMainMenu(false); }} className="w-full text-left px-4 py-3 hover:bg-slate-50 text-slate-700 flex items-center gap-3 text-sm font-medium"><Type size={16} className="text-purple-500"/> Giao diện</button>
+                        <button onClick={() => { setShowApiKeyInput(!showApiKeyInput); setShowMainMenu(false); }} className="w-full text-left px-4 py-3 hover:bg-slate-50 text-slate-700 flex items-center gap-3 text-sm font-medium border-t border-slate-100"><Key size={16} className={apiKeys.some(k => k) ? "text-green-500" : "text-red-500"}/> {apiKeys.filter(k => k).length} API Keys</button>
+                    </div>
+                )}
+             </div>
           </div>
         </div>
+        
         {showApiKeyInput && (
             <div className="bg-yellow-50 border-b border-yellow-100 p-3 shrink-0">
                 <div className="max-w-3xl mx-auto flex flex-col gap-2 text-sm">
@@ -590,6 +663,58 @@ export default function StoryFetcher() {
                         ))}
                     </div>
                 </div>
+            </div>
+        )}
+
+        {showHistory && (
+            <div className="absolute top-[60px] right-2 md:right-10 z-50 w-80 bg-white shadow-xl rounded-xl border border-slate-200 animate-in slide-in-from-top-2 overflow-hidden flex flex-col max-h-[80vh]">
+                 <div className="p-3 border-b flex justify-between items-center bg-slate-50"><span className="font-bold text-slate-700 flex items-center gap-2 text-sm"><HistoryIcon size={16}/> Lịch sử đọc</span><button onClick={() => setShowHistory(false)} className="p-1 hover:bg-slate-200 rounded"><X size={16}/></button></div>
+                 <div className="overflow-y-auto p-2 max-h-[60vh]">
+                    {history.length === 0 ? <p className="text-center text-slate-400 py-4 text-sm">Chưa có lịch sử</p> : history.map((h,i) => (
+                        <div key={i} onClick={() => { 
+                            if (h.translatedContent) {
+                                setUrl(h.url);
+                                setInputMode('url');
+                                setContent(""); 
+                                setTranslatedContent(h.translatedContent);
+                                processTranslatedText(h.translatedContent);
+                                setStep(3);
+                                setMobileTab('reader');
+                            } else {
+                                setUrl(h.url); 
+                                setInputMode('url'); 
+                                fetchContent(h.url); 
+                                setMobileTab('reader');
+                            }
+                            setShowHistory(false); 
+                        }} className="p-3 hover:bg-slate-50 rounded cursor-pointer border-b border-slate-100 last:border-0 group transition-colors">
+                            <div className="font-medium text-sm text-slate-700 group-hover:text-indigo-600 line-clamp-2">{h.title}</div>
+                            <div className="text-[10px] text-slate-400 mt-1">{new Date(h.timestamp).toLocaleString('vi-VN')}</div>
+                        </div>
+                    ))}
+                 </div>
+                 {history.length > 0 && <div className="p-2 border-t bg-slate-50 text-center"><button onClick={() => { setHistory([]); localStorage.removeItem('reader_history'); }} className="text-xs text-red-500 hover:text-red-700 font-medium">Xóa lịch sử</button></div>}
+            </div>
+        )}
+
+        {showAppearance && (
+            <div className="absolute top-[60px] right-2 md:right-16 z-50 w-72 bg-white shadow-xl rounded-xl border border-slate-200 animate-in slide-in-from-top-2 p-4">
+                 <div className="flex justify-between items-center mb-4"><span className="font-bold text-slate-700 flex items-center gap-2 text-sm"><Type size={16}/> Giao diện</span><button onClick={() => setShowAppearance(false)} className="p-1 hover:bg-slate-200 rounded"><X size={16}/></button></div>
+                 
+                 <div className="mb-4">
+                    <p className="text-xs text-slate-400 font-bold uppercase mb-2">Màu nền</p>
+                    <div className="flex gap-2">
+                        <button onClick={() => changeTheme('light')} className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all ${theme === 'light' ? 'ring-2 ring-indigo-500 border-transparent bg-[#fffdf5] text-slate-800' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}>Sáng</button>
+                        <button onClick={() => changeTheme('sepia')} className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all ${theme === 'sepia' ? 'ring-2 ring-indigo-500 border-transparent bg-[#f4ecd8] text-[#5b4636]' : 'bg-[#f4ecd8] border-slate-200 text-[#5b4636] opacity-60 hover:opacity-100'}`}>Vàng</button>
+                        <button onClick={() => changeTheme('dark')} className={`flex-1 py-2 rounded-lg border text-sm font-medium transition-all ${theme === 'dark' ? 'ring-2 ring-indigo-500 border-transparent bg-[#1e1e24] text-slate-300' : 'bg-[#1e1e24] border-slate-200 text-slate-400 opacity-60 hover:opacity-100'}`}>Tối</button>
+                    </div>
+                 </div>
+
+                 <div>
+                    <div className="flex justify-between mb-2"><p className="text-xs text-slate-400 font-bold uppercase">Cỡ chữ</p><span className="text-xs font-bold text-slate-700">{fontSize}px</span></div>
+                    <input type="range" min="14" max="28" step="1" value={fontSize} onChange={(e) => changeFontSize(parseInt(e.target.value))} className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"/>
+                    <div className="flex justify-between text-[10px] text-slate-400 mt-1 select-none"><span>A-</span><span>A+</span></div>
+                 </div>
             </div>
         )}
         <div className="flex-1 overflow-hidden flex flex-col p-2 sm:p-6 gap-4">
@@ -629,10 +754,10 @@ export default function StoryFetcher() {
                 </div>
               </div>
               {showMobileSettings && (<div className="lg:hidden absolute top-[50px] left-0 right-0 bg-white border-b border-slate-200 shadow-lg z-30 p-4 animate-in slide-in-from-top-5 grid grid-cols-2 gap-3"><div className="col-span-2 text-xs font-bold text-slate-400 uppercase">Cài đặt đọc</div><button onClick={() => setIsAutoMode(!isAutoMode)} className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-bold border transition-all ${isAutoMode ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-slate-50 text-slate-600 border-slate-200'}`}><InfinityIcon size={16} /> Chế độ Auto {isAutoMode ? 'BẬT' : 'TẮT'}</button><button onClick={() => setShowTimerMenu(!showTimerMenu)} className={`flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm font-medium border transition-colors ${timeLeft || autoStopChapterLimit ? 'bg-orange-100 text-orange-700 border-orange-200' : 'bg-slate-50 text-slate-600 border-slate-200'}`}>{timeLeft ? <React.Fragment><Timer size={16}/> {formatTime(timeLeft)}</React.Fragment> : autoStopChapterLimit ? <React.Fragment><Hash size={16}/> Dừng sau {autoStopChapterLimit} chương</React.Fragment> : <React.Fragment><Clock size={16}/> Hẹn giờ tắt</React.Fragment>}</button>{showTimerMenu && <div className="col-span-2 grid grid-cols-3 gap-2 pb-2"><div className="col-span-3 text-[10px] text-slate-400 font-bold uppercase">Hẹn giờ (phút)</div>{[15, 30, 60].map(m => (<button key={m} onClick={() => setTimer(m)} className="px-2 py-1 bg-slate-100 rounded text-xs">{m}p</button>))}<div className="col-span-3 text-[10px] text-slate-400 font-bold uppercase mt-2">Dừng sau (chương)</div>{[1, 5, 10].map(c => (<button key={c} onClick={() => setChapterLimit(c)} className="px-2 py-1 bg-slate-100 rounded text-xs">{c} chương</button>))}{(timeLeft || autoStopChapterLimit > 0) && <button onClick={() => {setTimeLeft(null); setAutoStopChapterLimit(0); setShowTimerMenu(false); setShowMobileSettings(false);}} className="col-span-3 px-3 py-2 bg-red-100 text-red-600 rounded text-xs font-bold mt-2">Tắt Hẹn Giờ</button>}</div>}<div className="col-span-2 mt-2 text-xs font-bold text-slate-400 uppercase flex justify-between items-center"><span>Giọng đọc & Tốc độ</span><span className="text-[10px] text-slate-400 font-normal">{voiceDebugMsg}</span></div><div className="col-span-2 flex items-center gap-2 bg-slate-50 p-2 rounded-lg border border-slate-200"><select className="flex-1 text-sm bg-transparent focus:outline-none text-slate-700 py-1" onChange={handleVoiceChange} value={selectedVoice?.name || ""}>{voices.length === 0 && <option>Đang tải giọng...</option>}{voices.length > 0 && voices.filter(v => v.lang.includes('vi') || v.lang.includes('VN')).length === 0 && <option>Không tìm thấy giọng Việt</option>}{voices.map(v => <option key={v.name} value={v.name}>{formatVoiceName(v.name)}</option>)}</select><button onClick={wakeUpSpeechEngine} className="p-2 bg-white rounded shadow-sm border border-slate-300 active:bg-slate-100" title="Thử tải lại giọng"><RefreshCw size={14}/></button></div><div className="col-span-2 flex items-center gap-3 bg-slate-50 p-2 rounded-lg border border-slate-200"><span className="text-xs font-bold text-slate-500 w-8">{speechRate}x</span><input type="range" min="0.5" max="2.0" step="0.1" value={speechRate} onChange={handleRateChange} className="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"/></div><div className="col-span-2 mt-2 text-xs font-bold text-slate-400 uppercase">Tiện ích AI</div><button onClick={() => {analyzeContent('summary'); setShowMobileSettings(false);}} className="flex items-center justify-center gap-2 px-3 py-2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-lg text-sm"><FileText size={16}/> Tóm tắt chương</button><button onClick={() => {analyzeContent('explain'); setShowMobileSettings(false);}} className="flex items-center justify-center gap-2 px-3 py-2 bg-amber-50 text-amber-700 border border-amber-200 rounded-lg text-sm"><HelpCircle size={16}/> Giải thích từ khó</button></div>)}
-              <div className="flex-1 relative bg-[#fffdf5] overflow-hidden">
+              <div className={`flex-1 relative overflow-hidden transition-colors duration-300 ${theme === 'dark' ? 'bg-[#1e1e24]' : theme === 'sepia' ? 'bg-[#f4ecd8]' : 'bg-[#fffdf5]'}`}>
                  {analysisType && (<div className="absolute inset-x-0 bottom-0 bg-white border-t border-slate-200 shadow-[0_-5px_20px_-5px_rgba(0,0,0,0.1)] z-20 flex flex-col max-h-[60%] animate-in slide-in-from-bottom-10 rounded-t-2xl"><div className="flex justify-between p-3 bg-slate-50 border-b rounded-t-2xl"><span className="font-bold text-sm text-slate-700 flex items-center gap-2"><Sparkles size={16} className="text-purple-500"/> AI Phân Tích</span><button onClick={() => setAnalysisType(null)} className="p-1 bg-slate-200 rounded-full"><X size={16}/></button></div><div className="p-5 overflow-y-auto text-sm leading-loose text-slate-700 whitespace-pre-line font-medium">{analyzing ? <span className="flex items-center gap-2 text-slate-500"><RotateCw className="animate-spin" size={16}/> Đang suy nghĩ...</span> : analysisResult}</div></div>)}
                  {translating && <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/90 z-10 backdrop-blur-sm"><div className="w-10 h-10 border-4 border-indigo-600 border-t-transparent rounded-full animate-spin mb-3"></div><p className="text-sm font-medium text-indigo-600 animate-pulse">Đang dịch & chuẩn bị đọc...</p></div>}
-                 <div ref={containerRef} onScroll={handleScroll} className="h-full overflow-y-auto p-4 md:p-8 font-literata text-lg leading-loose text-slate-800 pb-32 scroll-smooth">
+                 <div ref={containerRef} onScroll={handleScroll} className={`h-full overflow-y-auto p-4 md:p-8 font-literata leading-loose pb-32 scroll-smooth ${theme === 'dark' ? 'text-slate-300' : theme === 'sepia' ? 'text-[#433422]' : 'text-slate-800'}`} style={{ fontSize: `${fontSize}px` }}>
                     {chunks.length > 0 ? (
                         <React.Fragment>
                             {chunks.map((chunk, index) => (
