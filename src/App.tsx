@@ -327,7 +327,16 @@ export default function StoryFetcher() {
       
       let lastError;
       const promptText = translationStyle === 'ancient' 
-        ? `Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang lão luyện. Hãy viết lại đoạn convert Hán Việt sau sang thuần Việt mượt mà, sử dụng văn phong hào hùng, cổ kính, dùng các từ ngữ phù hợp bối cảnh xưa (huynh đệ, tại hạ, cô nương, v.v...). Giữ nguyên cấu trúc đoạn văn, tuyệt đối không thêm lời dẫn:\n\n`
+        ? `Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Hãy viết lại đoạn convert Hán Việt sau sang tiếng Việt mượt mà theo phong cách cổ trang nhưng DỄ ĐỌC, câu chữ rõ ràng, tự nhiên.
+
+    Yêu cầu:
+    - Ưu tiên diễn đạt hiện đại vừa phải, mạch lạc, tránh dùng từ cổ quá nặng/khó hiểu.
+    - Giữ đúng nội dung, không bịa thêm, không thêm lời dẫn.
+    - Giữ nguyên cấu trúc đoạn văn (xuống dòng như bản gốc).
+    - Tránh các từ quá hiện đại kiểu “anh ấy”, “cô ấy”, “làng này/làng nọ” nếu bối cảnh cổ trang.
+    - Xưng hô gợi cổ trang nhưng đơn giản: “hắn/y/nàng”, “lão giả”, “thiếu niên”, “các ngươi”, “bọn họ”, “ta/ngươi” (tùy ngữ cảnh). Chỉ dùng “tại hạ/bần đạo/cô nương” khi thật hợp cảnh.
+
+    Văn bản cần viết lại:\n\n`
         : `Bạn là biên tập viên truyện hiện đại chuyên nghiệp. Hãy viết lại đoạn convert Hán Việt sau sang tiếng Việt hiện đại, văn phong tự nhiên, dễ hiểu, phù hợp với truyện đô thị/ngôn tình hiện đại (dùng anh/em/cậu/tớ tùy ngữ cảnh). Giữ nguyên cấu trúc đoạn văn, tuyệt đối không thêm lời dẫn:\n\n`;
 
       for (const key of validKeys) {
@@ -340,7 +349,13 @@ export default function StoryFetcher() {
             if (!response.ok) throw new Error(`Lỗi API: ${response.status}`);
             const result = await response.json();
             let translatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
-            return translatedText ? translatedText.replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '').trim() : "";
+                        // Sanitize common markdown artifacts (e.g., **Chương ...**) to keep reading UI clean.
+                        return translatedText
+                            ? translatedText
+                                    .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
+                                    .replace(/\*\*/g, '')
+                                    .trim()
+                            : "";
         } catch (e: any) {
             lastError = e;
             if (e.message && e.message.includes('429')) continue;
@@ -654,7 +669,16 @@ export default function StoryFetcher() {
     } catch (err: any) { setError(err.message || 'Lỗi khi gọi AI.'); } finally { setTranslating(false); }
   };
 
-  const processTranslatedText = (text: string) => { if (!text) return; const paragraphs = text.split(/\n+/).map(p => p.trim()).filter(p => p.length > 0); setChunks(paragraphs); };
+    const processTranslatedText = (text: string) => {
+        if (!text) return;
+        // Also sanitize here so older cached translations still display nicely.
+        const cleaned = text.replace(/\*\*/g, '');
+        const paragraphs = cleaned
+            .split(/\n+/)
+            .map(p => p.trim())
+            .filter(p => p.length > 0);
+        setChunks(paragraphs);
+    };
   const formatVoiceName = (name: string) => { if (name.includes('HoaiMy')) return '✨ Hoài My'; if (name.includes('NamMinh')) return 'Nam Minh'; return name.replace('Microsoft Server Speech Text to Speech Voice (vi-VN, ', '').replace('Microsoft ', '').replace(')', ''); };
 
   // --- AUTO TRIGGERS ---
