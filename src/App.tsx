@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, memo, useCallback } from 'react';
-import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Play, Pause, Square, Edit3, Globe, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, CheckCircle2, History as HistoryIcon, Home, Palette, Clock, Sliders, Terminal } from 'lucide-react';
+import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Play, Pause, Square, Edit3, Globe, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, CheckCircle2, History as HistoryIcon, Home, Palette, Clock, Sliders, Terminal, Bookmark, Download, Search as SearchIcon, Maximize2, BarChart3 } from 'lucide-react';
 import { EdgeSpeechService, EDGE_VOICES } from './services/edgeTTS';
 
 // --- SUB-COMPONENT: PARAGRAPH RENDERER ---
@@ -118,6 +118,19 @@ export default function StoryFetcher() {
   const [translatedChapters, setTranslatedChapters] = useState<any[]>([]); // New state for cache
   const [showCache, setShowCache] = useState(false); // To show "Chương đã dịch" list
 
+  // --- NEW FEATURES: BOOKMARK, EXPORT, SEARCH, ZEN, STATS ---
+  const [bookmarks, setBookmarks] = useState<any[]>([]);
+  const [showBookmarks, setShowBookmarks] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<number[]>([]);
+  const [showSearch, setShowSearch] = useState(false);
+  const [zenMode, setZenMode] = useState(false);
+  const [readingStats, setReadingStats] = useState<{totalChapters: number, totalTime: number, dailyReads: {[key: string]: number}}>({totalChapters: 0, totalTime: 0, dailyReads: {}});
+  const [showStats, setShowStats] = useState(false);
+  const [showExportMenu, setShowExportMenu] = useState(false);
+  const [selectedChaptersForExport, setSelectedChaptersForExport] = useState<string[]>([]);
+  const [chapterStartTime, setChapterStartTime] = useState<number | null>(null);
+
   // Edge TTS refs
   const edgeServiceRef = useRef<EdgeSpeechService | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -181,6 +194,16 @@ export default function StoryFetcher() {
     const savedTranslated = localStorage.getItem('reader_translated_cache');
     if (savedTranslated) {
         try { setTranslatedChapters(JSON.parse(savedTranslated)); } catch {}
+    }
+    
+    // Load new features data
+    const savedBookmarks = localStorage.getItem('reader_bookmarks');
+    if (savedBookmarks) {
+        try { setBookmarks(JSON.parse(savedBookmarks)); } catch {}
+    }
+    const savedStats = localStorage.getItem('reader_stats');
+    if (savedStats) {
+        try { setReadingStats(JSON.parse(savedStats)); } catch {}
     }
   }, []);
 
@@ -304,6 +327,206 @@ export default function StoryFetcher() {
       setTranslatedChapters(newCache);
       localStorage.setItem('reader_translated_cache', JSON.stringify(newCache));
   };
+
+  // --- BOOKMARK FUNCTIONS ---
+  const addBookmark = () => {
+      if (!url && !nextChapterUrl) return;
+      const currentUrl = url || nextChapterUrl || '';
+      let title = "Chương không tên";
+      if (translatedContent) {
+          const lines = translatedContent.split('\n');
+          if (lines.length > 0) title = lines[0].substring(0, 50);
+      }
+      const newBookmark = {
+          url: currentUrl,
+          title,
+          chunkIndex: activeChunkIndex || 0,
+          timestamp: Date.now()
+      };
+      const newBookmarks = [newBookmark, ...bookmarks.filter(b => b.url !== currentUrl)].slice(0, 20);
+      setBookmarks(newBookmarks);
+      localStorage.setItem('reader_bookmarks', JSON.stringify(newBookmarks));
+  };
+
+  const removeBookmark = (url: string) => {
+      const newBookmarks = bookmarks.filter(b => b.url !== url);
+      setBookmarks(newBookmarks);
+      localStorage.setItem('reader_bookmarks', JSON.stringify(newBookmarks));
+  };
+
+  const loadBookmark = async (bookmark: any) => {
+      await loadChapter(bookmark.url);
+      setShowBookmarks(false);
+      setTimeout(() => {
+          if (bookmark.chunkIndex && chunkRefs.current[bookmark.chunkIndex]) {
+              chunkRefs.current[bookmark.chunkIndex]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              currentChunkIndexRef.current = bookmark.chunkIndex;
+          }
+      }, 500);
+  };
+
+  // --- SEARCH FUNCTIONS ---
+  const performSearch = () => {
+      if (!searchQuery || !translatedContent) {
+          setSearchResults([]);
+          return;
+      }
+      const results: number[] = [];
+      const query = searchQuery.toLowerCase();
+      chunks.forEach((chunk, index) => {
+          if (chunk.toLowerCase().includes(query)) {
+              results.push(index);
+          }
+      });
+      setSearchResults(results);
+  };
+
+  const jumpToSearchResult = (index: number) => {
+      if (chunkRefs.current[index]) {
+          chunkRefs.current[index]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          currentChunkIndexRef.current = index;
+          setActiveChunkIndex(index);
+      }
+  };
+
+  // --- EXPORT FUNCTIONS ---
+  const toggleChapterSelection = (chapterUrl: string) => {
+      setSelectedChaptersForExport(prev => 
+          prev.includes(chapterUrl) 
+              ? prev.filter(url => url !== chapterUrl)
+              : [...prev, chapterUrl]
+      );
+  };
+
+  const selectAllChapters = () => {
+      setSelectedChaptersForExport(translatedChapters.map(c => c.url));
+  };
+
+  const exportToTxt = () => {
+      let contentToExport = '';
+      
+      if (selectedChaptersForExport.length > 0) {
+          // Xuất nhiều chương được chọn
+          const chaptersToExport = translatedChapters
+              .filter(c => selectedChaptersForExport.includes(c.url))
+              .reverse(); // Reverse để giữ thứ tự đúng
+          
+          contentToExport = chaptersToExport.map((chapter, index) => {
+              const separator = index > 0 ? '\n\n' + '='.repeat(50) + '\n\n' : '';
+              return separator + chapter.translatedContent;
+          }).join('');
+      } else if (translatedContent) {
+          // Xuất chương hiện tại
+          contentToExport = translatedContent;
+      } else {
+          return;
+      }
+      
+      const blob = new Blob([contentToExport], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const fileName = selectedChaptersForExport.length > 1 
+          ? `truyen_${selectedChaptersForExport.length}_chuong_${Date.now()}.txt`
+          : `truyen_${Date.now()}.txt`;
+      a.download = fileName;
+      a.click();
+      URL.revokeObjectURL(url);
+      setShowExportMenu(false);
+      setSelectedChaptersForExport([]);
+  };
+
+  const exportToPdf = async () => {
+      let contentToExport = '';
+      
+      if (selectedChaptersForExport.length > 0) {
+          // Xuất nhiều chương
+          const chaptersToExport = translatedChapters
+              .filter(c => selectedChaptersForExport.includes(c.url))
+              .reverse();
+          
+          contentToExport = chaptersToExport.map((chapter, index) => {
+              const separator = index > 0 ? '<div style="page-break-before: always;"></div>' : '';
+              const paragraphs = chapter.translatedContent.split('\n\n').map((p: string) => `<p>${p}</p>`).join('');
+              return separator + paragraphs;
+          }).join('');
+      } else if (translatedContent) {
+          contentToExport = translatedContent.split('\n\n').map(p => `<p>${p}</p>`).join('');
+      } else {
+          return;
+      }
+      
+      const printWindow = window.open('', '_blank');
+      if (printWindow) {
+          printWindow.document.write(`
+              <html>
+                  <head>
+                      <title>Xuất PDF</title>
+                      <style>
+                          body { font-family: 'Times New Roman', serif; padding: 2cm; line-height: 1.8; }
+                          p { margin-bottom: 1em; text-align: justify; }
+                          @media print {
+                              body { padding: 1cm; }
+                          }
+                      </style>
+                  </head>
+                  <body>
+                      ${contentToExport}
+                  </body>
+              </html>
+          `);
+          printWindow.document.close();
+          setTimeout(() => {
+              printWindow.print();
+          }, 500);
+      }
+      setShowExportMenu(false);
+      setSelectedChaptersForExport([]);
+  };
+
+  // --- STATS FUNCTIONS ---
+  const updateReadingStats = () => {
+      const today = new Date().toISOString().split('T')[0];
+      const newStats = {
+          totalChapters: readingStats.totalChapters + 1,
+          totalTime: readingStats.totalTime + (chapterStartTime ? Math.floor((Date.now() - chapterStartTime) / 1000) : 0),
+          dailyReads: {
+              ...readingStats.dailyReads,
+              [today]: (readingStats.dailyReads[today] || 0) + 1
+          }
+      };
+      setReadingStats(newStats);
+      localStorage.setItem('reader_stats', JSON.stringify(newStats));
+  };
+
+  // Track reading time
+  useEffect(() => {
+      if (step === 3 && translatedContent && !chapterStartTime) {
+          setChapterStartTime(Date.now());
+      }
+  }, [step, translatedContent]);
+
+  // Update stats when moving to next chapter
+  useEffect(() => {
+      if (chapterStartTime && step === 1) {
+          updateReadingStats();
+          setChapterStartTime(null);
+      }
+  }, [step]);
+
+  // Zen mode keyboard shortcut
+  useEffect(() => {
+      const handleKeyPress = (e: KeyboardEvent) => {
+          if (e.key === 'Escape' && zenMode) {
+              setZenMode(false);
+          } else if (e.key === 'f' && e.ctrlKey && step === 3) {
+              e.preventDefault();
+              setZenMode(!zenMode);
+          }
+      };
+      window.addEventListener('keydown', handleKeyPress);
+      return () => window.removeEventListener('keydown', handleKeyPress);
+  }, [zenMode, step]);
 
 
   const changeTheme = (t: 'light' | 'dark' | 'sepia') => {
@@ -1161,6 +1384,8 @@ export default function StoryFetcher() {
                 <p className="text-[10px] text-indigo-200 opacity-80">Convert hán việt sang thuần việt</p>
              </div>
              <div className="flex gap-2">
+                <button onClick={() => setShowBookmarks(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors text-white" title="Bookmark"><Bookmark size={18}/></button>
+                <button onClick={() => setShowStats(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors text-white" title="Thống kê"><BarChart3 size={18}/></button>
                 <button onClick={() => setShowHistory(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors text-white" title="Lịch sử đọc"><HistoryIcon size={18}/></button>
                 <button onClick={() => setShowCache(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors text-white" title="Kho đã dịch"><CheckCircle2 size={18}/></button>
                 <button onClick={() => setShowApiKeyInput(!showApiKeyInput)} className={`p-2 rounded-full transition-colors text-white ${apiKeys.some(k => k) ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100' : 'bg-red-500/20 hover:bg-red-500/30 text-red-100 animate-pulse'}`} title="API Key"><Key size={18}/></button>
@@ -1281,6 +1506,14 @@ export default function StoryFetcher() {
                  
                  {/* Theme & Settings Trigger */}
                  <div className="flex items-center gap-2">
+                    {step === 3 && translatedContent && (
+                        <>
+                            <button onClick={addBookmark} className="p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Đánh dấu"><Bookmark size={20}/></button>
+                            <button onClick={() => setShowSearch(true)} className="p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Tìm kiếm"><SearchIcon size={20}/></button>
+                            <button onClick={() => setShowExportMenu(true)} className="p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Xuất file"><Download size={20}/></button>
+                            <button onClick={() => setZenMode(true)} className="hidden md:block p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Chế độ tập trung (Ctrl+F)"><Maximize2 size={20}/></button>
+                        </>
+                    )}
                     <button onClick={() => setShowAppearance(!showAppearance)} className="p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Giao diện"><Palette size={20}/></button>
                     <button onClick={() => setShowMobileSettings(!showMobileSettings)} className="p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Cài đặt"><Sliders size={20}/></button>
                  </div>
@@ -1694,6 +1927,266 @@ export default function StoryFetcher() {
                    </div>
                    {translatedChapters.length > 0 && <div className="p-3 border-t bg-slate-50 rounded-b-2xl text-center"><button onClick={() => { setTranslatedChapters([]); localStorage.removeItem('reader_translated_cache'); }} className="text-xs text-red-500 hover:text-red-700 font-bold uppercase tracking-wide">Xóa bộ nhớ đệm</button></div>}
                </div>
+          </div>
+      )}
+
+      {/* Bookmarks Modal */}
+      {showBookmarks && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col animate-in zoom-in-95">
+                   <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl">
+                       <h3 className="font-bold text-slate-800 flex items-center gap-2 text-indigo-600"><Bookmark size={20}/> Bookmark</h3>
+                       <button onClick={() => setShowBookmarks(false)} className="p-1 hover:bg-slate-200 rounded-full"><X size={20}/></button>
+                   </div>
+                   <div className="flex-1 overflow-y-auto p-2">
+                       {bookmarks.length === 0 ? <p className="text-center text-slate-400 py-8 text-sm italic">Chưa có bookmark nào.</p> : bookmarks.map((b,i) => (
+                           <div key={i} className="p-3 hover:bg-indigo-50 rounded-xl border-b border-slate-50 last:border-0 group transition-colors flex gap-3">
+                               <div className="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold shrink-0"><Bookmark size={18}/></div>
+                               <div className="flex-1 min-w-0" onClick={() => loadBookmark(b)}>
+                                   <div className="font-bold text-sm text-slate-700 truncate group-hover:text-indigo-700 cursor-pointer">{b.title}</div>
+                                   <div className="text-[10px] text-slate-400 mt-1">Đoạn {b.chunkIndex + 1} • {new Date(b.timestamp).toLocaleString('vi-VN')}</div>
+                               </div>
+                               <button onClick={() => removeBookmark(b.url)} className="p-2 hover:bg-red-50 rounded-lg text-red-400 hover:text-red-600 transition-colors">
+                                   <Trash2 size={16}/>
+                               </button>
+                           </div>
+                       ))}
+                   </div>
+                   {bookmarks.length > 0 && <div className="p-3 border-t bg-slate-50 rounded-b-2xl text-center"><button onClick={() => { setBookmarks([]); localStorage.removeItem('reader_bookmarks'); }} className="text-xs text-red-500 hover:text-red-700 font-bold uppercase tracking-wide">Xóa tất cả</button></div>}
+               </div>
+          </div>
+      )}
+
+      {/* Search Modal */}
+      {showSearch && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col animate-in zoom-in-95">
+                   <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl">
+                       <h3 className="font-bold text-slate-800 flex items-center gap-2 text-blue-600"><SearchIcon size={20}/> Tìm kiếm</h3>
+                       <button onClick={() => setShowSearch(false)} className="p-1 hover:bg-slate-200 rounded-full"><X size={20}/></button>
+                   </div>
+                   <div className="p-4 border-b">
+                       <div className="relative">
+                           <input 
+                               type="text" 
+                               value={searchQuery} 
+                               onChange={(e) => setSearchQuery(e.target.value)}
+                               onKeyDown={(e) => e.key === 'Enter' && performSearch()}
+                               placeholder="Nhập từ khóa cần tìm..."
+                               className="w-full px-4 py-2 pr-10 border border-slate-300 rounded-lg focus:border-blue-500 focus:ring-2 focus:ring-blue-200"
+                           />
+                           <button onClick={performSearch} className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 bg-blue-500 hover:bg-blue-600 text-white rounded-lg">
+                               <SearchIcon size={16}/>
+                           </button>
+                       </div>
+                   </div>
+                   <div className="flex-1 overflow-y-auto p-2">
+                       {searchResults.length === 0 ? (
+                           <p className="text-center text-slate-400 py-8 text-sm italic">
+                               {searchQuery ? 'Không tìm thấy kết quả nào' : 'Nhập từ khóa và nhấn Enter'}
+                           </p>
+                       ) : (
+                           <div className="space-y-1">
+                               <p className="text-xs text-slate-500 px-3 py-2">Tìm thấy {searchResults.length} kết quả</p>
+                               {searchResults.map((idx) => (
+                                   <div 
+                                       key={idx} 
+                                       onClick={() => { jumpToSearchResult(idx); setShowSearch(false); }}
+                                       className="p-3 hover:bg-blue-50 rounded-xl cursor-pointer border-b border-slate-50 last:border-0 group transition-colors"
+                                   >
+                                       <div className="text-xs text-slate-500 mb-1">Đoạn {idx + 1}</div>
+                                       <div className="text-sm text-slate-700 line-clamp-2">{chunks[idx]}</div>
+                                   </div>
+                               ))}
+                           </div>
+                       )}
+                   </div>
+               </div>
+          </div>
+      )}
+
+      {/* Export Menu Modal */}
+      {showExportMenu && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[85vh] flex flex-col animate-in zoom-in-95">
+                   <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl">
+                       <h3 className="font-bold text-slate-800 flex items-center gap-2 text-green-600"><Download size={20}/> Xuất file</h3>
+                       <button onClick={() => { setShowExportMenu(false); setSelectedChaptersForExport([]); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={20}/></button>
+                   </div>
+                   
+                   {/* Chapter Selection */}
+                   {translatedChapters.length > 0 && (
+                       <div className="p-4 border-b bg-slate-50/50">
+                           <div className="flex items-center justify-between mb-3">
+                               <span className="text-sm font-bold text-slate-700">Chọn chương để xuất:</span>
+                               <div className="flex gap-2">
+                                   <button 
+                                       onClick={selectAllChapters}
+                                       className="text-xs px-3 py-1 bg-indigo-500 hover:bg-indigo-600 text-white rounded-full font-bold"
+                                   >
+                                       Chọn tất cả
+                                   </button>
+                                   <button 
+                                       onClick={() => setSelectedChaptersForExport([])}
+                                       className="text-xs px-3 py-1 bg-slate-300 hover:bg-slate-400 text-slate-700 rounded-full font-bold"
+                                   >
+                                       Bỏ chọn
+                                   </button>
+                               </div>
+                           </div>
+                           <div className="max-h-48 overflow-y-auto space-y-1 custom-scrollbar">
+                               {translatedChapters.slice().reverse().map((chapter) => (
+                                   <label 
+                                       key={chapter.url} 
+                                       className="flex items-center gap-3 p-2 hover:bg-white rounded-lg cursor-pointer transition-colors"
+                                   >
+                                       <input 
+                                           type="checkbox"
+                                           checked={selectedChaptersForExport.includes(chapter.url)}
+                                           onChange={() => toggleChapterSelection(chapter.url)}
+                                           className="w-4 h-4 text-indigo-600 rounded focus:ring-2 focus:ring-indigo-500"
+                                       />
+                                       <div className="flex-1 min-w-0">
+                                           <div className="text-sm font-medium text-slate-700 truncate">{chapter.title}</div>
+                                           <div className="text-[10px] text-slate-400">{chapter.webName}</div>
+                                       </div>
+                                   </label>
+                               ))}
+                           </div>
+                           {selectedChaptersForExport.length > 0 && (
+                               <div className="mt-3 p-2 bg-indigo-50 rounded-lg text-center">
+                                   <span className="text-xs font-bold text-indigo-700">
+                                       Đã chọn {selectedChaptersForExport.length} chương
+                                   </span>
+                               </div>
+                           )}
+                       </div>
+                   )}
+                   
+                   <div className="p-4 space-y-3">
+                       {translatedChapters.length === 0 && !translatedContent && (
+                           <p className="text-center text-slate-400 py-4 text-sm italic">Chưa có chương nào để xuất</p>
+                       )}
+                       
+                       {(translatedChapters.length > 0 || translatedContent) && (
+                           <>
+                               <button 
+                                   onClick={exportToTxt}
+                                   disabled={translatedChapters.length > 0 && selectedChaptersForExport.length === 0 && !translatedContent}
+                                   className="w-full p-4 bg-blue-50 hover:bg-blue-100 rounded-xl border border-blue-200 transition-colors flex items-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                               >
+                                   <FileText size={24} className="text-blue-600"/>
+                                   <div className="text-left flex-1">
+                                       <div className="font-bold text-blue-900">Xuất file TXT</div>
+                                       <div className="text-xs text-blue-600">
+                                           {selectedChaptersForExport.length > 0 
+                                               ? `${selectedChaptersForExport.length} chương đã chọn`
+                                               : translatedContent ? 'Chương hiện tại' : 'Chọn chương để xuất'}
+                                       </div>
+                                   </div>
+                               </button>
+                               <button 
+                                   onClick={exportToPdf}
+                                   disabled={translatedChapters.length > 0 && selectedChaptersForExport.length === 0 && !translatedContent}
+                                   className="w-full p-4 bg-red-50 hover:bg-red-100 rounded-xl border border-red-200 transition-colors flex items-center gap-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                               >
+                                   <FileText size={24} className="text-red-600"/>
+                                   <div className="text-left flex-1">
+                                       <div className="font-bold text-red-900">Xuất file PDF</div>
+                                       <div className="text-xs text-red-600">
+                                           {selectedChaptersForExport.length > 0 
+                                               ? `${selectedChaptersForExport.length} chương đã chọn`
+                                               : translatedContent ? 'Chương hiện tại' : 'Chọn chương để xuất'}
+                                       </div>
+                                   </div>
+                               </button>
+                           </>
+                       )}
+                   </div>
+               </div>
+          </div>
+      )}
+
+      {/* Statistics Modal */}
+      {showStats && (
+          <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
+               <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md animate-in zoom-in-95">
+                   <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl">
+                       <h3 className="font-bold text-slate-800 flex items-center gap-2 text-purple-600"><BarChart3 size={20}/> Thống kê đọc</h3>
+                       <button onClick={() => setShowStats(false)} className="p-1 hover:bg-slate-200 rounded-full"><X size={20}/></button>
+                   </div>
+                   <div className="p-6 space-y-6">
+                       <div className="grid grid-cols-2 gap-4">
+                           <div className="p-4 bg-gradient-to-br from-purple-50 to-purple-100 rounded-xl">
+                               <div className="text-2xl font-bold text-purple-900">{readingStats.totalChapters}</div>
+                               <div className="text-xs text-purple-600 mt-1">Tổng chương đã đọc</div>
+                           </div>
+                           <div className="p-4 bg-gradient-to-br from-blue-50 to-blue-100 rounded-xl">
+                               <div className="text-2xl font-bold text-blue-900">{Math.floor(readingStats.totalTime / 60)}</div>
+                               <div className="text-xs text-blue-600 mt-1">Tổng thời gian (phút)</div>
+                           </div>
+                       </div>
+                       
+                       <div>
+                           <h4 className="text-sm font-bold text-slate-700 mb-3">Hoạt động 7 ngày gần nhất</h4>
+                           <div className="space-y-2">
+                               {Object.entries(readingStats.dailyReads).slice(-7).reverse().map(([date, count]) => (
+                                   <div key={date} className="flex items-center gap-3">
+                                       <span className="text-xs text-slate-500 w-24">{new Date(date).toLocaleDateString('vi-VN')}</span>
+                                       <div className="flex-1 bg-slate-100 rounded-full h-6 overflow-hidden">
+                                           <div 
+                                               className="bg-gradient-to-r from-purple-400 to-purple-600 h-full rounded-full flex items-center justify-end pr-2"
+                                               style={{ width: `${Math.min(100, (count as number) * 20)}%` }}
+                                           >
+                                               <span className="text-[10px] text-white font-bold">{count}</span>
+                                           </div>
+                                       </div>
+                                   </div>
+                               ))}
+                               {Object.keys(readingStats.dailyReads).length === 0 && (
+                                   <p className="text-center text-slate-400 py-4 text-sm italic">Chưa có dữ liệu</p>
+                               )}
+                           </div>
+                       </div>
+                       
+                       <button 
+                           onClick={() => {
+                               setReadingStats({totalChapters: 0, totalTime: 0, dailyReads: {}});
+                               localStorage.removeItem('reader_stats');
+                           }}
+                           className="w-full py-2 text-xs text-red-500 hover:text-red-700 font-bold"
+                       >
+                           Xóa tất cả thống kê
+                       </button>
+                   </div>
+               </div>
+          </div>
+      )}
+
+      {/* Zen Mode Overlay */}
+      {zenMode && step === 3 && (
+          <div className="fixed inset-0 z-[70] bg-slate-900 flex flex-col animate-in fade-in">
+              <div className="absolute top-4 right-4 flex gap-2 z-10">
+                  <button onClick={() => setFontSize(Math.max(12, fontSize - 2))} className="p-2 bg-white/10 hover:bg-white/20 rounded-full text-white">
+                      <span className="text-xl">A-</span>
+                  </button>
+                  <button onClick={() => setFontSize(Math.min(32, fontSize + 2))} className="p-2 bg-white/10 hover:bg-white/20 rounded-full text-white">
+                      <span className="text-xl">A+</span>
+                  </button>
+                  <button onClick={() => setZenMode(false)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full text-white">
+                      <X size={20}/>
+                  </button>
+              </div>
+              <div className="flex-1 overflow-y-auto p-8 md:p-16">
+                  <div className="max-w-4xl mx-auto text-slate-200" style={{ fontSize: `${fontSize}px`, fontFamily: "'Literata', serif", lineHeight: "1.9" }}>
+                      {chunks.map((chunk, index) => (
+                          <p key={index} className="mb-6 text-justify">{chunk}</p>
+                      ))}
+                  </div>
+              </div>
+              <div className="absolute bottom-4 left-1/2 -translate-x-1/2 text-slate-500 text-xs">
+                  Nhấn ESC để thoát chế độ tập trung
+              </div>
           </div>
       )}
 
