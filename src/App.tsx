@@ -941,14 +941,22 @@ export default function StoryFetcher() {
                const lines = translatedContent.split('\n');
                if (lines.length > 0) title = lines[0].substring(0, 50);
                
+               // Tạo icon SVG inline
+               const svg = `
+                 <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 24 24">
+                   <rect width="24" height="24" fill="%234f46e5"/>
+                   <path fill="%23fbbf24" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+                 </svg>
+               `;
+               const blob = new Blob([svg], { type: 'image/svg+xml' });
+               const iconUrl = URL.createObjectURL(blob);
+               
                navigator.mediaSession.metadata = new MediaMetadata({
                  title: title,
                  artist: 'AI Reader',
                  album: `Đoạn ${index + 1}/${chunks.length}`,
                  artwork: [
-                   { src: 'https://via.placeholder.com/96', sizes: '96x96', type: 'image/png' },
-                   { src: 'https://via.placeholder.com/128', sizes: '128x128', type: 'image/png' },
-                   { src: 'https://via.placeholder.com/256', sizes: '256x256', type: 'image/png' }
+                   { src: iconUrl, sizes: '512x512', type: 'image/svg+xml' }
                  ]
                });
                navigator.mediaSession.playbackState = 'playing';
@@ -1469,10 +1477,6 @@ export default function StoryFetcher() {
                 <p className="text-[10px] text-indigo-200 opacity-80">Convert hán việt sang thuần việt</p>
              </div>
              <div className="flex gap-2">
-                <button onClick={() => setShowBookmarks(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors text-white" title="Bookmark"><Bookmark size={18}/></button>
-                <button onClick={() => setShowStats(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors text-white" title="Thống kê"><BarChart3 size={18}/></button>
-                <button onClick={() => setShowHistory(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors text-white" title="Lịch sử đọc"><HistoryIcon size={18}/></button>
-                <button onClick={() => setShowCache(true)} className="p-2 bg-white/10 hover:bg-white/20 rounded-full transition-colors text-white" title="Kho đã dịch"><CheckCircle2 size={18}/></button>
                 <button onClick={() => setShowApiKeyInput(!showApiKeyInput)} className={`p-2 rounded-full transition-colors text-white ${apiKeys.some(k => k) ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100' : 'bg-red-500/20 hover:bg-red-500/30 text-red-100 animate-pulse'}`} title="API Key"><Key size={18}/></button>
              </div>
           </div>
