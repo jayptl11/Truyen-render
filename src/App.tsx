@@ -112,6 +112,7 @@ export default function StoryFetcher() {
   const activeUtterancesRef = useRef<Set<SpeechSynthesisUtterance>>(new Set());
   const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
   const currentChunkIndexRef = useRef(0);
+    const lastSpeechEventAtRef = useRef<number>(0);
   const chunkRefs = useRef<(HTMLParagraphElement | null)[]>([]); 
   const containerRef = useRef<HTMLDivElement>(null); 
   const autoModeRef = useRef(isAutoMode);
@@ -417,6 +418,7 @@ export default function StoryFetcher() {
   const stopSpeech = useCallback(() => { 
     window.speechSynthesis.cancel(); 
     activeUtterancesRef.current.clear();
+    speechRef.current = null;
     setIsSpeaking(false); setIsPaused(false); setActiveChunkIndex(null); setActiveCharIndex(null); currentChunkIndexRef.current = 0; 
   }, []);
 
@@ -475,17 +477,23 @@ export default function StoryFetcher() {
     const utterance = new SpeechSynthesisUtterance(chunkText);
     utterance.rate = speechRate;
     utterance.pitch = 1.0;
+    utterance.volume = 1.0;
+    utterance.lang = selectedVoice?.lang || 'vi-VN';
     if (selectedVoice) utterance.voice = selectedVoice;
+
+    const QUEUE_AHEAD = 3;
 
     utterance.onstart = () => {
          setActiveChunkIndex(index);
          setActiveCharIndex(0);
          currentChunkIndexRef.current = index;
          speechRef.current = utterance;
+            lastSpeechEventAtRef.current = Date.now();
     };
 
     utterance.onboundary = (event) => {
-         if (event.name === 'word') setActiveCharIndex(event.charIndex);
+            lastSpeechEventAtRef.current = Date.now();
+            if (event.name === 'word') setActiveCharIndex(event.charIndex);
     };
 
     utterance.onend = () => {
@@ -493,8 +501,8 @@ export default function StoryFetcher() {
          activeUtterancesRef.current.delete(utterance);
          setActiveCharIndex(null);
          
-         // Queue 2 chunks ahead to keep buffer full
-         scheduleNext(index + 2);
+            // Keep a small buffer ahead; too many queued items can be dropped by some browsers.
+            scheduleNext(index + QUEUE_AHEAD);
 
          if (index === chunks.length - 1) {
             if (autoModeRef.current && nextChapterUrl) {
@@ -536,13 +544,41 @@ export default function StoryFetcher() {
      
      const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
      
-     const u1 = prepareUtterance(startIdx);
-     if (u1) window.speechSynthesis.speak(u1);
+      const u1 = prepareUtterance(startIdx);
+      if (u1) window.speechSynthesis.speak(u1);
 
-     const u2 = prepareUtterance(startIdx + 1);
-     if (u2) window.speechSynthesis.speak(u2);
+      const u2 = prepareUtterance(startIdx + 1);
+      if (u2) window.speechSynthesis.speak(u2);
+
+      const u3 = prepareUtterance(startIdx + 2);
+      if (u3) window.speechSynthesis.speak(u3);
      
   }, [prepareUtterance, chunks]); // Simplify dependencies
+
+  // Watchdog: some browsers randomly stall/skip between utterances on long reads.
+  // This tries to auto-resume or restart the queue from current index.
+  useEffect(() => {
+      if (!isSpeaking || isPaused) return;
+      const synth = window.speechSynthesis;
+      const intervalId = setInterval(() => {
+          try {
+              if (synth.paused) synth.resume();
+
+              const last = lastSpeechEventAtRef.current;
+              const now = Date.now();
+              // If we're "speaking" but no boundary/start events for too long, restart.
+              if (synth.speaking && last > 0 && now - last > 15000) {
+                  synth.cancel();
+                  activeUtterancesRef.current.clear();
+                  // Restart from current index
+                  setTimeout(() => speakNextChunk(), 0);
+              }
+          } catch {
+              // no-op
+          }
+      }, 2000);
+      return () => clearInterval(intervalId);
+  }, [isSpeaking, isPaused, speakNextChunk]);
 
   const toggleSpeech = useCallback(() => {
     if (voices.length === 0) wakeUpSpeechEngine();
@@ -671,13 +707,69 @@ export default function StoryFetcher() {
 
     const processTranslatedText = (text: string) => {
         if (!text) return;
+
         // Also sanitize here so older cached translations still display nicely.
-        const cleaned = text.replace(/\*\*/g, '');
-        const paragraphs = cleaned
-            .split(/\n+/)
-            .map(p => p.trim())
-            .filter(p => p.length > 0);
-        setChunks(paragraphs);
+        const cleaned = text.replace(/\*\*/g, '').replace(/\r\n/g, '\n');
+
+        const splitToSentences = (input: string): string[] => {
+            const Segmenter = (Intl as any)?.Segmenter;
+            if (typeof Segmenter === 'function') {
+                try {
+                    const seg = new Segmenter('vi', { granularity: 'sentence' });
+                    return Array.from(seg.segment(input), (s: any) => String(s.segment).trim()).filter(Boolean);
+                } catch {
+                    // fall through
+                }
+            }
+            // Fallback: keep punctuation at end to sound natural.
+            const parts = input
+                .split(/(?<=[.!?…。！？])\s+/)
+                .map(s => s.trim())
+                .filter(Boolean);
+            return parts.length ? parts : [input.trim()].filter(Boolean);
+        };
+
+        const splitForTts = (input: string): string[] => {
+            const MAX_CHARS = 520; // only split when a paragraph is too long
+            const PACK_CHARS = 320; // pack sentences into chunks around this size
+
+            const paragraphs = input
+                .split(/\n{2,}|\n+/)
+                .map(p => p.trim())
+                .filter(p => p.length > 0);
+
+            const out: string[] = [];
+            for (const p of paragraphs) {
+                if (p.length <= MAX_CHARS) {
+                    out.push(p);
+                    continue;
+                }
+
+                const sentences = splitToSentences(p);
+                let buf = '';
+                for (const s of sentences) {
+                    const next = buf ? `${buf} ${s}` : s;
+                    if (next.length <= PACK_CHARS) {
+                        buf = next;
+                        continue;
+                    }
+                    if (buf) out.push(buf);
+                    // If a single sentence is still too long, hard-split it.
+                    if (s.length > PACK_CHARS) {
+                        for (let i = 0; i < s.length; i += PACK_CHARS) {
+                            out.push(s.slice(i, i + PACK_CHARS).trim());
+                        }
+                        buf = '';
+                    } else {
+                        buf = s;
+                    }
+                }
+                if (buf) out.push(buf);
+            }
+            return out;
+        };
+
+        setChunks(splitForTts(cleaned));
     };
   const formatVoiceName = (name: string) => { if (name.includes('HoaiMy')) return '✨ Hoài My'; if (name.includes('NamMinh')) return 'Nam Minh'; return name.replace('Microsoft Server Speech Text to Speech Voice (vi-VN, ', '').replace('Microsoft ', '').replace(')', ''); };
 
