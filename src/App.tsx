@@ -422,7 +422,9 @@ export default function StoryFetcher() {
           return;
       }
       
-      const blob = new Blob([contentToExport], { type: 'text/plain;charset=utf-8' });
+      // Thêm UTF-8 BOM để đảm bảo hiển thị đúng tiếng Việt
+      const BOM = '\uFEFF';
+      const blob = new Blob([BOM + contentToExport], { type: 'text/plain;charset=utf-8' });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -782,7 +784,12 @@ export default function StoryFetcher() {
       audio.src = '';
     }
     
-    setIsSpeaking(false); setIsPaused(false); setActiveChunkIndex(null); setActiveCharIndex(null); currentChunkIndexRef.current = 0; 
+    setIsSpeaking(false); setIsPaused(false); setActiveChunkIndex(null); setActiveCharIndex(null); currentChunkIndexRef.current = 0;
+    
+    // Clear Media Session
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.playbackState = 'none';
+    }
   }, []);
 
   // Edge TTS: Get or fetch audio URL for chunk (Word-like buffering)
@@ -924,7 +931,30 @@ export default function StoryFetcher() {
          setActiveCharIndex(0);
          currentChunkIndexRef.current = index;
          speechRef.current = utterance;
-            lastSpeechEventAtRef.current = Date.now();
+         lastSpeechEventAtRef.current = Date.now();
+         
+         // Update Media Session
+         setTimeout(() => {
+           if ('mediaSession' in navigator && translatedContent) {
+             try {
+               let title = 'Chuyện không tên';
+               const lines = translatedContent.split('\n');
+               if (lines.length > 0) title = lines[0].substring(0, 50);
+               
+               navigator.mediaSession.metadata = new MediaMetadata({
+                 title: title,
+                 artist: 'AI Reader',
+                 album: `Đoạn ${index + 1}/${chunks.length}`,
+                 artwork: [
+                   { src: 'https://via.placeholder.com/96', sizes: '96x96', type: 'image/png' },
+                   { src: 'https://via.placeholder.com/128', sizes: '128x128', type: 'image/png' },
+                   { src: 'https://via.placeholder.com/256', sizes: '256x256', type: 'image/png' }
+                 ]
+               });
+               navigator.mediaSession.playbackState = 'playing';
+             } catch (e) {}
+           }
+         }, 0);
     };
 
     utterance.onboundary = (event) => {
@@ -1068,11 +1098,21 @@ export default function StoryFetcher() {
         // Pause
         if (audio) audio.pause();
         setIsPaused(true);
+        setTimeout(() => {
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.playbackState = 'paused';
+          }
+        }, 0);
         return;
       }
       if (isPaused) {
         // Resume
         setIsPaused(false);
+        setTimeout(() => {
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.playbackState = 'playing';
+          }
+        }, 0);
         if (audio && audio.src) {
           void audio.play();
         } else {
@@ -1095,11 +1135,21 @@ export default function StoryFetcher() {
         // Force Pause (actually Cancel + Save State)
         activeUtterancesRef.current.clear();
         window.speechSynthesis.cancel();
-        setIsPaused(true); 
+        setIsPaused(true);
+        setTimeout(() => {
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.playbackState = 'paused';
+          }
+        }, 0);
     } 
     else if (isPaused) { 
         // Resume from current pos
-        setIsPaused(false); 
+        setIsPaused(false);
+        setTimeout(() => {
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.playbackState = 'playing';
+          }
+        }, 0);
         speakNextChunk();
     } 
     else { 
@@ -1118,7 +1168,7 @@ export default function StoryFetcher() {
     currentChunkIndexRef.current = index; 
     setActiveChunkIndex(index); 
     setActiveCharIndex(null); 
-    setIsSpeaking(true); setIsPaused(false); 
+    setIsSpeaking(true); setIsPaused(false);
     
     // Use timeout to ensure cancel takes effect before queuing
     setTimeout(() => speakNextChunk(), 50); 
@@ -1143,6 +1193,39 @@ export default function StoryFetcher() {
 
   const handleRateChange = (e: React.ChangeEvent<HTMLInputElement>) => { const newRate = parseFloat(e.target.value); setSpeechRate(newRate); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); setTimeout(() => speakNextChunk(), 50); }};
   const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => { const v = voices.find(val => val.name === e.target.value); if (v) { setSelectedVoice(v); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); setTimeout(() => speakNextChunk(), 50); }}};
+
+  // Setup Media Session handlers once
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    
+    try {
+      navigator.mediaSession.setActionHandler('play', () => {
+        const btn = document.querySelector('[data-tts-toggle]') as HTMLButtonElement;
+        if (btn && !btn.disabled) btn.click();
+      });
+      
+      navigator.mediaSession.setActionHandler('pause', () => {
+        const btn = document.querySelector('[data-tts-toggle]') as HTMLButtonElement;
+        if (btn && !btn.disabled) btn.click();
+      });
+      
+      navigator.mediaSession.setActionHandler('previoustrack', () => {
+        const prevIdx = Math.max(0, currentChunkIndexRef.current - 1);
+        jumpToChunk(prevIdx);
+      });
+      
+      navigator.mediaSession.setActionHandler('nexttrack', () => {
+        const nextIdx = Math.min(chunks.length - 1, currentChunkIndexRef.current + 1);
+        jumpToChunk(nextIdx);
+      });
+      
+      navigator.mediaSession.setActionHandler('stop', () => {
+        stopSpeech();
+      });
+    } catch (error) {
+      console.error('Media Session setup error:', error);
+    }
+  }, [chunks.length, jumpToChunk, stopSpeech]);
 
   const analyzeContent = async (type: 'summary' | 'explain') => {
     if (!translatedContent && !content) return;
@@ -1361,14 +1444,16 @@ export default function StoryFetcher() {
              <BookOpen size={20} /> <span className="text-[10px] font-bold">Đọc</span>
              {chunks.length > 0 && <span className="absolute top-2 right-4 w-2 h-2 bg-red-500 rounded-full border border-white"></span>}
          </button>
-         <button onClick={() => setShowHistory(true)} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showHistory ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
-             <HistoryIcon size={20} /> <span className="text-[10px] font-bold">Lịch sử</span>
+         <button onClick={() => step === 3 && translatedContent ? addBookmark() : setShowBookmarks(true)} className={`relative flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showBookmarks ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
+             <Bookmark size={20} className={bookmarks.some(b => b.url === (url || nextChapterUrl)) ? 'fill-yellow-400 text-yellow-400' : ''} /> 
+             <span className="text-[10px] font-bold">Bookmark</span>
+             {bookmarks.length > 0 && <span className="absolute top-2 right-4 w-2 h-2 bg-yellow-500 rounded-full border border-white"></span>}
+         </button>
+         <button onClick={() => setShowExportMenu(true)} disabled={!translatedContent && translatedChapters.length === 0} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showExportMenu ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'} disabled:opacity-30`}>
+             <Download size={20} /> <span className="text-[10px] font-bold">Tải</span>
          </button>
          <button onClick={() => setShowCache(true)} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showCache ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
              <CheckCircle2 size={20} /> <span className="text-[10px] font-bold">Kho</span>
-         </button>
-         <button onClick={() => setShowConsole(true)} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showConsole ? 'text-green-600 bg-green-50' : 'text-slate-400 hover:text-slate-600'}`}>
-             <Terminal size={20} /> <span className="text-[10px] font-bold">Console</span>
          </button>
       </div>
 
@@ -1498,7 +1583,7 @@ export default function StoryFetcher() {
              <div className="flex items-center gap-2 md:gap-4">
                  {/* Desktop Audio Controls */}
                  <div className="hidden md:flex bg-slate-100 rounded-full p-1 items-center gap-1 border border-slate-200">
-                    <button onClick={toggleSpeech} disabled={!chunks.length} className={`p-2 rounded-full transition-colors ${isSpeaking && !isPaused ? 'bg-indigo-100 text-indigo-600' : 'hover:bg-white text-slate-600'}`}>{isSpeaking && !isPaused ? <Pause size={18}/> : <Play size={18}/>}</button>
+                    <button onClick={toggleSpeech} disabled={!chunks.length} data-tts-toggle className={`p-2 rounded-full transition-colors ${isSpeaking && !isPaused ? 'bg-indigo-100 text-indigo-600' : 'hover:bg-white text-slate-600'}`}>{isSpeaking && !isPaused ? <Pause size={18}/> : <Play size={18}/>}</button>
                     <button onClick={stopSpeech} disabled={!isSpeaking && !isPaused} className="p-2 hover:bg-white text-slate-600 rounded-full transition-colors"><Square size={18}/></button>
                     <div className="w-px h-4 bg-slate-300 mx-1"></div>
                     <button onClick={() => setIsAutoMode(!isAutoMode)} className={`px-3 py-1.5 text-xs font-bold rounded-full transition-all flex items-center gap-1 ${isAutoMode ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:bg-white'}`}><InfinityIcon size={14}/> Auto</button>
@@ -1722,7 +1807,7 @@ export default function StoryFetcher() {
                               </div>
                               
                               <div className="flex gap-2">
-                                  <button onClick={toggleSpeech} className="flex-1 py-2 bg-indigo-100 text-indigo-700 rounded-lg text-sm font-bold flex items-center justify-center gap-2">
+                                  <button onClick={toggleSpeech} className="flex-1 py-2 bg-indigo-100 text-indigo-700 rounded-lg text-sm font-bold flex items-center justify-center gap-2" data-tts-toggle>
                                       {isSpeaking && !isPaused ? <Pause size={16}/> : <Play size={16}/>} {isSpeaking && !isPaused ? 'Tạm dừng' : 'Đọc Ngay'}
                                   </button>
                                   {(isSpeaking || isPaused) && (
@@ -1906,12 +1991,17 @@ export default function StoryFetcher() {
                        <button onClick={() => setShowCache(false)} className="p-1 hover:bg-slate-200 rounded-full"><X size={20}/></button>
                    </div>
                    <div className="flex-1 overflow-y-auto p-2">
-                       {translatedChapters.length === 0 ? <p className="text-center text-slate-400 py-8 text-sm italic">Chưa có bản dịch nào được lưu.</p> : translatedChapters.map((h,i) => (
+                       {translatedChapters.length === 0 ? <p className="text-center text-slate-400 py-8 text-sm italic">Chưa có bản dịch nào được lưu.</p> : translatedChapters.map((h,i) => {
+                           const isBookmarked = bookmarks.some(b => b.url === h.url);
+                           return (
                            <div key={i} onClick={() => { 
                                loadChapter(h.url);
                                setShowCache(false); 
                            }} className="p-3 hover:bg-emerald-50 rounded-xl cursor-pointer border-b border-slate-50 last:border-0 group transition-colors flex gap-3">
-                               <div className="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-600 font-bold shrink-0"><FileText size={18}/></div>
+                               <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold shrink-0 relative ${isBookmarked ? 'bg-yellow-100' : 'bg-emerald-100'}`}>
+                                   <FileText size={18} className={isBookmarked ? 'text-yellow-600' : 'text-emerald-600'}/>
+                                   {isBookmarked && <Bookmark size={12} className="absolute -top-1 -right-1 fill-yellow-400 text-yellow-400"/>}
+                               </div>
                                <div className="flex-1 min-w-0">
                                    <div className="font-bold text-sm text-slate-700 truncate group-hover:text-emerald-700">{h.title}</div>
                                    <div className="flex items-center gap-2 mt-1 flex-wrap">
@@ -1923,7 +2013,8 @@ export default function StoryFetcher() {
                                    <div className="text-[10px] text-slate-400 mt-1 flex items-center gap-1"><Clock size={10}/> {new Date(h.timestamp).toLocaleString('vi-VN')}</div>
                                </div>
                            </div>
-                       ))}
+                       );
+                       })}
                    </div>
                    {translatedChapters.length > 0 && <div className="p-3 border-t bg-slate-50 rounded-b-2xl text-center"><button onClick={() => { setTranslatedChapters([]); localStorage.removeItem('reader_translated_cache'); }} className="text-xs text-red-500 hover:text-red-700 font-bold uppercase tracking-wide">Xóa bộ nhớ đệm</button></div>}
                </div>
