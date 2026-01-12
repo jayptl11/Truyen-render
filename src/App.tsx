@@ -329,23 +329,33 @@ export default function StoryFetcher() {
   };
 
   // --- BOOKMARK FUNCTIONS ---
-  const addBookmark = () => {
+  const toggleBookmark = () => {
       if (!url && !nextChapterUrl) return;
       const currentUrl = url || nextChapterUrl || '';
-      let title = "Chương không tên";
-      if (translatedContent) {
-          const lines = translatedContent.split('\n');
-          if (lines.length > 0) title = lines[0].substring(0, 50);
+      const isBookmarked = bookmarks.some(b => b.url === currentUrl);
+      
+      if (isBookmarked) {
+          // Remove bookmark
+          const newBookmarks = bookmarks.filter(b => b.url !== currentUrl);
+          setBookmarks(newBookmarks);
+          localStorage.setItem('reader_bookmarks', JSON.stringify(newBookmarks));
+      } else {
+          // Add bookmark
+          let title = "Chương không tên";
+          if (translatedContent) {
+              const lines = translatedContent.split('\n');
+              if (lines.length > 0) title = lines[0].substring(0, 50);
+          }
+          const newBookmark = {
+              url: currentUrl,
+              title,
+              chunkIndex: activeChunkIndex || 0,
+              timestamp: Date.now()
+          };
+          const newBookmarks = [newBookmark, ...bookmarks].slice(0, 20);
+          setBookmarks(newBookmarks);
+          localStorage.setItem('reader_bookmarks', JSON.stringify(newBookmarks));
       }
-      const newBookmark = {
-          url: currentUrl,
-          title,
-          chunkIndex: activeChunkIndex || 0,
-          timestamp: Date.now()
-      };
-      const newBookmarks = [newBookmark, ...bookmarks.filter(b => b.url !== currentUrl)].slice(0, 20);
-      setBookmarks(newBookmarks);
-      localStorage.setItem('reader_bookmarks', JSON.stringify(newBookmarks));
   };
 
   const removeBookmark = (url: string) => {
@@ -1390,8 +1400,8 @@ export default function StoryFetcher() {
              <BookOpen size={20} /> <span className="text-[10px] font-bold">Đọc</span>
              {chunks.length > 0 && <span className="absolute top-2 right-4 w-2 h-2 bg-red-500 rounded-full border border-white"></span>}
          </button>
-         <button onClick={() => step === 3 && translatedContent ? addBookmark() : setShowBookmarks(true)} className={`relative flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showBookmarks ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
-             <Bookmark size={20} className={bookmarks.some(b => b.url === (url || nextChapterUrl)) ? 'fill-yellow-400 text-yellow-400' : ''} /> 
+         <button onClick={() => setShowBookmarks(true)} className={`relative flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showBookmarks ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
+             <Bookmark size={20} /> 
              <span className="text-[10px] font-bold">Bookmark</span>
              {bookmarks.length > 0 && <span className="absolute top-2 right-4 w-2 h-2 bg-yellow-500 rounded-full border border-white"></span>}
          </button>
@@ -1400,6 +1410,9 @@ export default function StoryFetcher() {
          </button>
          <button onClick={() => setShowCache(true)} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showCache ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
              <CheckCircle2 size={20} /> <span className="text-[10px] font-bold">Kho</span>
+         </button>
+         <button onClick={() => setShowConsole(true)} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showConsole ? 'text-green-600 bg-green-50' : 'text-slate-400 hover:text-slate-600'}`}>
+             <Terminal size={20} /> <span className="text-[10px] font-bold">Log</span>
          </button>
       </div>
 
@@ -1535,7 +1548,17 @@ export default function StoryFetcher() {
                  <div className="flex items-center gap-2">
                     {step === 3 && translatedContent && (
                         <>
-                            <button onClick={addBookmark} className="p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Đánh dấu"><Bookmark size={20}/></button>
+                            <button 
+                                onClick={toggleBookmark} 
+                                className={`p-2 rounded-full transition-colors ${
+                                    bookmarks.some(b => b.url === (url || nextChapterUrl)) 
+                                        ? 'bg-yellow-100 text-yellow-600 hover:bg-yellow-200' 
+                                        : 'hover:bg-slate-100 text-slate-600'
+                                }`} 
+                                title={bookmarks.some(b => b.url === (url || nextChapterUrl)) ? "Bỏ đánh dấu" : "Đánh dấu"}
+                            >
+                                <Bookmark size={20} className={bookmarks.some(b => b.url === (url || nextChapterUrl)) ? 'fill-yellow-600' : ''}/>
+                            </button>
                             <button onClick={() => setShowSearch(true)} className="p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Tìm kiếm"><SearchIcon size={20}/></button>
                             <button onClick={() => setShowExportMenu(true)} className="p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Xuất file"><Download size={20}/></button>
                             <button onClick={() => setZenMode(true)} className="hidden md:block p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Chế độ tập trung (Ctrl+F)"><Maximize2 size={20}/></button>
