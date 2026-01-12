@@ -70,7 +70,8 @@ export default function StoryFetcher() {
   const [error, setError] = useState('');
   const [step, setStep] = useState(1);
   const [inputMode, setInputMode] = useState<'url' | 'manual'>('url');
-  const [translationStyle, setTranslationStyle] = useState<'modern' | 'ancient'>('modern');
+  const [translationStyle, setTranslationStyle] = useState<'modern' | 'ancient'>('ancient');
+  const [autoTranslationStyle, setAutoTranslationStyle] = useState<'modern' | 'ancient' | null>(null); // Giữ thể loại dịch khi auto
   
   const [mobileTab, setMobileTab] = useState<'input' | 'reader'>('input');
 
@@ -282,14 +283,21 @@ export default function StoryFetcher() {
       };
   }, []);
   
-  const saveToCache = (url: string, content: string, translatedContent: string, nextUrl: string | null, prevUrl: string | null) => {
+  const saveToCache = (url: string, content: string, translatedContent: string, nextUrl: string | null, prevUrl: string | null, translationType?: 'modern' | 'ancient') => {
       if (!url || !translatedContent) return;
       
       let title = "Chương không tên";
       const lines = translatedContent.split('\n');
       if (lines.length > 0) title = lines[0].substring(0, 50);
       
-      const newItem = { url, title, content, translatedContent, nextUrl, prevUrl, timestamp: Date.now() };
+      // Extract domain from URL
+      let webName = "Không rõ";
+      try {
+          const urlObj = new URL(url);
+          webName = urlObj.hostname.replace('www.', '');
+      } catch {}
+      
+      const newItem = { url, title, content, translatedContent, nextUrl, prevUrl, timestamp: Date.now(), translationType: translationType || translationStyle, webName };
       
       // Update cache: remove old entry for same URL, add new to top
       const newCache = [newItem, ...translatedChapters.filter(c => c.url !== url)].slice(0, 20); // Limit to 20 chapters to save space
@@ -443,8 +451,11 @@ export default function StoryFetcher() {
       const validKeys = apiKeys.filter(k => k && k.trim().length > 0);
       if (validKeys.length === 0) throw new Error("Cần nhập ít nhất 1 API Key.");
       
+      // Sử dụng autoTranslationStyle nếu đang ở chế độ auto, nếu không thì dùng translationStyle hiện tại
+      const styleToUse = isAutoMode && autoTranslationStyle ? autoTranslationStyle : translationStyle;
+      
       let lastError;
-      const promptText = translationStyle === 'ancient' 
+      const promptText = styleToUse === 'ancient' 
         ? `Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Hãy viết lại đoạn convert Hán Việt sau sang tiếng Việt mượt mà theo phong cách cổ trang nhưng DỄ ĐỌC, câu chữ rõ ràng, tự nhiên.
 
     Yêu cầu:
@@ -520,7 +531,8 @@ export default function StoryFetcher() {
                       prevUrl: data.prevUrl
                   });
                   // Also save to cache immediately
-                  saveToCache(nextChapterUrl, data.content, translated, data.nextUrl, data.prevUrl);
+                  const styleToUse = isAutoMode && autoTranslationStyle ? autoTranslationStyle : translationStyle;
+                  saveToCache(nextChapterUrl, data.content, translated, data.nextUrl, data.prevUrl, styleToUse);
               }
           }
       } catch (e) {
@@ -661,7 +673,8 @@ export default function StoryFetcher() {
           setStep(3);
           setMobileTab('reader');
           saveToHistory(targetUrl, preloadedData.translatedContent);
-          saveToCache(targetUrl, preloadedData.content, preloadedData.translatedContent, preloadedData.nextUrl, preloadedData.prevUrl); // Save to cache confirmed
+          const styleToUse = isAutoMode && autoTranslationStyle ? autoTranslationStyle : translationStyle;
+          saveToCache(targetUrl, preloadedData.content, preloadedData.translatedContent, preloadedData.nextUrl, preloadedData.prevUrl, styleToUse); // Save to cache confirmed
           setPreloadedData(null); 
           window.scrollTo({ top: 0, behavior: 'smooth' });
           return; 
@@ -973,7 +986,8 @@ export default function StoryFetcher() {
       const translated = await fetchTranslation(content);
       setTranslatedContent(translated); processTranslatedText(translated); setStep(3); setMobileTab('reader');
       saveToHistory(url || nextChapterUrl || "", translated);
-      saveToCache(url || nextChapterUrl || "", content, translated, nextChapterUrl, prevChapterUrl); // Updated to saveNext/Prev might be tricky here as state relies on fetch
+      const styleToUse = isAutoMode && autoTranslationStyle ? autoTranslationStyle : translationStyle;
+      saveToCache(url || nextChapterUrl || "", content, translated, nextChapterUrl, prevChapterUrl, styleToUse);
     } catch (err: any) { setError(err.message || 'Lỗi khi gọi AI.'); } finally { setTranslating(false); }
   };
 
@@ -1179,9 +1193,22 @@ export default function StoryFetcher() {
                  </div>
                  
                  {/* Translation Style Switcher */}
-                 <div className="flex p-1 bg-slate-100 rounded-xl shadow-inner">
-                     <button onClick={() => setTranslationStyle('ancient')} className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${translationStyle === 'ancient' ? 'bg-amber-100 text-amber-700 shadow-sm border border-amber-200' : 'text-slate-500 hover:text-slate-700'}`}><FileText size={14}/> Cổ Trang</button>
-                     <button onClick={() => setTranslationStyle('modern')} className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${translationStyle === 'modern' ? 'bg-blue-100 text-blue-700 shadow-sm border border-blue-200' : 'text-slate-500 hover:text-slate-700'}`}><Sparkles size={14}/> Hiện Đại</button>
+                 <div className="flex p-1 bg-slate-100 rounded-xl shadow-inner relative">
+                     <button 
+                         onClick={() => !isAutoMode && setTranslationStyle('ancient')} 
+                         disabled={isAutoMode}
+                         className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${translationStyle === 'ancient' ? 'bg-amber-100 text-amber-700 shadow-sm border border-amber-200' : 'text-slate-500 hover:text-slate-700'} ${isAutoMode ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                         <FileText size={14}/> Cổ Trang
+                     </button>
+                     <button 
+                         onClick={() => !isAutoMode && setTranslationStyle('modern')} 
+                         disabled={isAutoMode}
+                         className={`flex-1 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center justify-center gap-2 ${translationStyle === 'modern' ? 'bg-blue-100 text-blue-700 shadow-sm border border-blue-200' : 'text-slate-500 hover:text-slate-700'} ${isAutoMode ? 'opacity-50 cursor-not-allowed' : ''}`}>
+                         <Sparkles size={14}/> Hiện Đại
+                     </button>
+                     {isAutoMode && <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                         <span className="text-[9px] bg-indigo-500 text-white px-2 py-0.5 rounded-full font-bold shadow-sm">Auto đang bật</span>
+                     </div>}
                  </div>
              </div>
 
@@ -1487,7 +1514,17 @@ export default function StoryFetcher() {
                       <div className="pt-4 border-t border-slate-100">
                           <label className="text-xs font-bold text-slate-400 uppercase mb-3 block">Tự động</label>
                           <div className="flex flex-col gap-3">
-                               <button onClick={() => setIsAutoMode(!isAutoMode)} className={`flex items-center justify-between p-3 rounded-xl border transition-all ${isAutoMode ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:bg-slate-50'}`}>
+                               <button onClick={() => {
+                                   const newAutoMode = !isAutoMode;
+                                   setIsAutoMode(newAutoMode);
+                                   if (newAutoMode) {
+                                       // Khi bật auto, lưu lại thể loại dịch hiện tại
+                                       setAutoTranslationStyle(translationStyle);
+                                   } else {
+                                       // Khi tắt auto, reset
+                                       setAutoTranslationStyle(null);
+                                   }
+                               }} className={`flex items-center justify-between p-3 rounded-xl border transition-all ${isAutoMode ? 'border-indigo-500 bg-indigo-50' : 'border-slate-200 hover:bg-slate-50'}`}>
                                    <div className="flex items-center gap-3">
                                        <div className={`p-2 rounded-full ${isAutoMode ? 'bg-indigo-500 text-white' : 'bg-slate-200 text-slate-500'}`}><InfinityIcon size={18}/></div>
                                        <div className="text-left">
@@ -1644,6 +1681,12 @@ export default function StoryFetcher() {
                                <div className="w-10 h-10 rounded-lg bg-emerald-100 flex items-center justify-center text-emerald-600 font-bold shrink-0"><FileText size={18}/></div>
                                <div className="flex-1 min-w-0">
                                    <div className="font-bold text-sm text-slate-700 truncate group-hover:text-emerald-700">{h.title}</div>
+                                   <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                       {h.webName && <span className="text-[10px] px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-bold">{h.webName}</span>}
+                                       {h.translationType && <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${h.translationType === 'ancient' ? 'bg-amber-100 text-amber-700' : 'bg-purple-100 text-purple-700'}`}>
+                                           {h.translationType === 'ancient' ? 'Cổ Trang' : 'Hiện Đại'}
+                                       </span>}
+                                   </div>
                                    <div className="text-[10px] text-slate-400 mt-1 flex items-center gap-1"><Clock size={10}/> {new Date(h.timestamp).toLocaleString('vi-VN')}</div>
                                </div>
                            </div>
