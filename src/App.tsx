@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, memo, useCallback } from 'react';
-import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Play, Pause, Square, Edit3, Globe, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, Settings, CheckCircle2, History as HistoryIcon, Home, Palette, Clock } from 'lucide-react';
+import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Play, Pause, Square, Edit3, Globe, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, CheckCircle2, History as HistoryIcon, Home, Palette, Clock, Sliders, Terminal } from 'lucide-react';
+import { EdgeSpeechService, EDGE_VOICES } from './services/edgeTTS';
 
 // --- SUB-COMPONENT: PARAGRAPH RENDERER ---
 const ParagraphItem = memo(({ text, isActive, activeCharIndex, onClick, index, setRef }: any) => {
@@ -83,9 +84,14 @@ export default function StoryFetcher() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isPaused, setIsPaused] = useState(false);
   const [speechRate, setSpeechRate] = useState(1.0);
+  const [ttsChunkChars, setTtsChunkChars] = useState(650);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
   const [voiceDebugMsg, setVoiceDebugMsg] = useState('');
+  
+  // Edge TTS (Word-like smooth playback)
+  const [ttsEngine, setTtsEngine] = useState<'browser' | 'edge'>('browser'); // Default browser vì Edge bị block
+  const [edgeVoice, setEdgeVoice] = useState(EDGE_VOICES[0].name);
   
   // --- AUTO & TIMER & COUNTER STATES ---
   const [isAutoMode, setIsAutoMode] = useState(false);
@@ -94,6 +100,8 @@ export default function StoryFetcher() {
   const [chaptersReadCount, setChaptersReadCount] = useState<number>(0); // Đếm số chương đã đọc trong phiên Auto
   
   const [showMobileSettings, setShowMobileSettings] = useState(false);
+  const [showConsole, setShowConsole] = useState(false);
+  const [consoleLogs, setConsoleLogs] = useState<Array<{type: 'log'|'error'|'warn'|'info', message: string, timestamp: string}>>([]);
 
   // --- PRELOAD STATES ---
   const [preloadedData, setPreloadedData] = useState<any>(null);
@@ -109,15 +117,35 @@ export default function StoryFetcher() {
   const [translatedChapters, setTranslatedChapters] = useState<any[]>([]); // New state for cache
   const [showCache, setShowCache] = useState(false); // To show "Chương đã dịch" list
 
+  // Edge TTS refs
+  const edgeServiceRef = useRef<EdgeSpeechService | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioCacheRef = useRef<Map<number, string>>(new Map());
+  const audioInFlightRef = useRef<Map<number, Promise<string>>>(new Map());
+  const playTokenRef = useRef(0);
+  
   const activeUtterancesRef = useRef<Set<SpeechSynthesisUtterance>>(new Set());
   const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
   const currentChunkIndexRef = useRef(0);
-    const lastSpeechEventAtRef = useRef<number>(0);
+  const lastSpeechEventAtRef = useRef<number>(0);
   const chunkRefs = useRef<(HTMLParagraphElement | null)[]>([]); 
   const containerRef = useRef<HTMLDivElement>(null); 
   const autoModeRef = useRef(isAutoMode);
   
   useEffect(() => { autoModeRef.current = isAutoMode; }, [isAutoMode]);
+
+  // Init Edge TTS
+  useEffect(() => {
+    if (!edgeServiceRef.current) {
+      edgeServiceRef.current = new EdgeSpeechService();
+    }
+    return () => {
+      // Cleanup audio cache
+      for (const url of audioCacheRef.current.values()) {
+        try { URL.revokeObjectURL(url); } catch {}
+      }
+    };
+  }, []);
 
   // --- INIT ---
   useEffect(() => {
@@ -140,6 +168,11 @@ export default function StoryFetcher() {
     if (savedTheme) setTheme(savedTheme);
     const savedSize = localStorage.getItem('reader_font_size');
     if (savedSize) setFontSize(parseInt(savedSize));
+    const savedChunkChars = localStorage.getItem('reader_tts_chunk_chars');
+    if (savedChunkChars) {
+        const n = parseInt(savedChunkChars);
+        if (!Number.isNaN(n)) setTtsChunkChars(Math.min(3000, Math.max(200, n)));
+    }
     const savedHistory = localStorage.getItem('reader_history');
     if (savedHistory) {
         try { setHistory(JSON.parse(savedHistory)); } catch {}
@@ -164,6 +197,90 @@ export default function StoryFetcher() {
       setHistory(newHistory);
       localStorage.setItem('reader_history', JSON.stringify(newHistory));
   };
+  
+  // Console log capture
+  useEffect(() => {
+      const addLog = (type: 'log'|'error'|'warn'|'info', ...args: any[]) => {
+          try {
+              const message = args.map(arg => {
+                  if (arg instanceof Error) {
+                      return `${arg.name}: ${arg.message}\n${arg.stack || ''}`;
+                  }
+                  if (typeof arg === 'object' && arg !== null) {
+                      try {
+                          return JSON.stringify(arg, null, 2);
+                      } catch {
+                          return String(arg);
+                      }
+                  }
+                  return String(arg);
+              }).join(' ');
+              const timestamp = new Date().toLocaleTimeString('vi-VN', { hour12: false });
+              setConsoleLogs(prev => [...prev.slice(-99), { type, message, timestamp }]);
+          } catch (err) {
+              // Fallback if capture fails
+              setConsoleLogs(prev => [...prev.slice(-99), { 
+                  type: 'error', 
+                  message: 'Failed to capture log', 
+                  timestamp: new Date().toLocaleTimeString('vi-VN', { hour12: false })
+              }]);
+          }
+      };
+
+      const originalLog = console.log;
+      const originalError = console.error;
+      const originalWarn = console.warn;
+      const originalInfo = console.info;
+
+      console.log = (...args) => { originalLog(...args); addLog('log', ...args); };
+      console.error = (...args) => { originalError(...args); addLog('error', ...args); };
+      console.warn = (...args) => { originalWarn(...args); addLog('warn', ...args); };
+      console.info = (...args) => { originalInfo(...args); addLog('info', ...args); };
+
+      // Capture runtime errors
+      const handleError = (event: ErrorEvent) => {
+          addLog('error', `${event.message} at ${event.filename}:${event.lineno}:${event.colno}`);
+      };
+
+      // Capture unhandled promise rejections (fetch errors, async errors)
+      const handleRejection = (event: PromiseRejectionEvent) => {
+          if (event.reason instanceof Error) {
+              addLog('error', `Unhandled Promise Rejection: ${event.reason.message}`, event.reason.stack);
+          } else {
+              addLog('error', 'Unhandled Promise Rejection:', event.reason);
+          }
+      };
+
+      // Capture fetch errors by wrapping fetch
+      const originalFetch = window.fetch;
+      window.fetch = async (...args: Parameters<typeof fetch>) => {
+          try {
+              const response = await originalFetch(...args);
+              if (!response.ok) {
+                  const url = typeof args[0] === 'string' ? args[0] : (args[0] instanceof Request ? args[0].url : String(args[0]));
+                  addLog('error', `HTTP ${response.status} ${response.statusText}: ${url}`);
+              }
+              return response;
+          } catch (error) {
+              const url = typeof args[0] === 'string' ? args[0] : (args[0] instanceof Request ? args[0].url : String(args[0]));
+              addLog('error', `Fetch failed: ${url}`, error);
+              throw error;
+          }
+      };
+
+      window.addEventListener('error', handleError);
+      window.addEventListener('unhandledrejection', handleRejection);
+
+      return () => {
+          console.log = originalLog;
+          console.error = originalError;
+          console.warn = originalWarn;
+          console.info = originalInfo;
+          window.fetch = originalFetch;
+          window.removeEventListener('error', handleError);
+          window.removeEventListener('unhandledrejection', handleRejection);
+      };
+  }, []);
   
   const saveToCache = (url: string, content: string, translatedContent: string, nextUrl: string | null, prevUrl: string | null) => {
       if (!url || !translatedContent) return;
@@ -416,11 +533,94 @@ export default function StoryFetcher() {
   // --- HANDLERS ---
   
   const stopSpeech = useCallback(() => { 
+    // Stop browser TTS
     window.speechSynthesis.cancel(); 
     activeUtterancesRef.current.clear();
     speechRef.current = null;
+    
+    // Stop Edge audio
+    playTokenRef.current++;
+    const audio = audioRef.current;
+    if (audio) {
+      try { audio.pause(); } catch {}
+      audio.currentTime = 0;
+      audio.src = '';
+    }
+    
     setIsSpeaking(false); setIsPaused(false); setActiveChunkIndex(null); setActiveCharIndex(null); currentChunkIndexRef.current = 0; 
   }, []);
+
+  // Edge TTS: Get or fetch audio URL for chunk (Word-like buffering)
+  const getEdgeAudio = useCallback(async (index: number): Promise<string> => {
+    if (index < 0 || index >= chunks.length) throw new Error('Invalid index');
+    
+    const cached = audioCacheRef.current.get(index);
+    if (cached) return cached;
+    
+    const inFlight = audioInFlightRef.current.get(index);
+    if (inFlight) return await inFlight;
+    
+    const promise = (async () => {
+      if (!edgeServiceRef.current) edgeServiceRef.current = new EdgeSpeechService();
+      const text = chunks[index];
+      const { audioBlob } = await edgeServiceRef.current.synthesize(text, edgeVoice, speechRate);
+      const url = URL.createObjectURL(audioBlob);
+      audioCacheRef.current.set(index, url);
+      return url;
+    })();
+    
+    audioInFlightRef.current.set(index, promise);
+    try {
+      return await promise;
+    } finally {
+      audioInFlightRef.current.delete(index);
+    }
+  }, [chunks, edgeVoice, speechRate]);
+
+  // Edge TTS: Play specific chunk
+  const playEdgeChunk = useCallback(async (index: number) => {
+    const audio = audioRef.current;
+    if (!audio || index < 0 || index >= chunks.length) return;
+    
+    const token = playTokenRef.current;
+    setActiveChunkIndex(index);
+    setActiveCharIndex(null);
+    currentChunkIndexRef.current = index;
+    
+    try {
+      const url = await getEdgeAudio(index);
+      if (playTokenRef.current !== token) return; // Cancelled
+      
+      audio.src = url;
+      await audio.play();
+      
+      // Prefetch next chunks (Word-like smooth buffering)
+      void getEdgeAudio(index + 1).catch(() => {});
+      void getEdgeAudio(index + 2).catch(() => {});
+    } catch (e: any) {
+      console.error('Edge TTS error:', e);
+      setVoiceDebugMsg(`Lỗi Edge TTS: ${e.message || 'Không rõ'}`);
+    }
+  }, [chunks, getEdgeAudio]);
+
+  // Edge TTS: Handle audio end -> next chunk
+  const handleEdgeAudioEnded = useCallback(() => {
+    if (ttsEngine !== 'edge' || !isSpeaking || isPaused) return;
+    
+    const next = currentChunkIndexRef.current + 1;
+    if (next >= chunks.length) {
+      // End of chapter
+      if (autoModeRef.current && nextChapterUrl) {
+        setTimeout(() => loadChapter(nextChapterUrl, true), 500);
+      } else {
+        setIsSpeaking(false);
+        setIsPaused(false);
+      }
+      return;
+    }
+    
+    void playEdgeChunk(next);
+  }, [ttsEngine, isSpeaking, isPaused, chunks.length, nextChapterUrl, playEdgeChunk]);
 
   const loadChapter = async (targetUrl: string, isAutoNav = false) => {
       stopSpeech();
@@ -481,7 +681,7 @@ export default function StoryFetcher() {
     utterance.lang = selectedVoice?.lang || 'vi-VN';
     if (selectedVoice) utterance.voice = selectedVoice;
 
-    const QUEUE_AHEAD = 3;
+    const QUEUE_AHEAD = 5; // Tăng buffer để mượt hơn (giống Word)
 
     utterance.onstart = () => {
          setActiveChunkIndex(index);
@@ -537,13 +737,13 @@ export default function StoryFetcher() {
   }, [prepareUtterance]);
 
   const speakNextChunk = useCallback(() => {
-     // Replaced by startSpeakingSequence but keeping name valid for now if referenced elsewhere, 
-     // but basically this function is now "Start Sequence"
+     // Smart buffering: queue multiple chunks ahead to reduce gaps (Word-like)
      window.speechSynthesis.cancel();
      activeUtterancesRef.current.clear();
      
      const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
      
+      // Queue 5 chunks ahead for smoother playback
       const u1 = prepareUtterance(startIdx);
       if (u1) window.speechSynthesis.speak(u1);
 
@@ -552,37 +752,109 @@ export default function StoryFetcher() {
 
       const u3 = prepareUtterance(startIdx + 2);
       if (u3) window.speechSynthesis.speak(u3);
+      
+      const u4 = prepareUtterance(startIdx + 3);
+      if (u4) window.speechSynthesis.speak(u4);
+      
+      const u5 = prepareUtterance(startIdx + 4);
+      if (u5) window.speechSynthesis.speak(u5);
      
-  }, [prepareUtterance, chunks]); // Simplify dependencies
+  }, [prepareUtterance, chunks]);
 
-  // Watchdog: some browsers randomly stall/skip between utterances on long reads.
-  // This tries to auto-resume or restart the queue from current index.
+  // Watchdog: Aggressive recovery when browser TTS gets stuck
   useEffect(() => {
-      if (!isSpeaking || isPaused) return;
+      if (!isSpeaking || isPaused || ttsEngine === 'edge') return;
+      
       const synth = window.speechSynthesis;
+      let consecutiveStuckChecks = 0;
+      
       const intervalId = setInterval(() => {
           try {
-              if (synth.paused) synth.resume();
+              // Force resume if paused (browser bug workaround)
+              if (synth.paused) {
+                  synth.resume();
+              }
 
               const last = lastSpeechEventAtRef.current;
               const now = Date.now();
-              // If we're "speaking" but no boundary/start events for too long, restart.
-              if (synth.speaking && last > 0 && now - last > 15000) {
-                  synth.cancel();
-                  activeUtterancesRef.current.clear();
-                  // Restart from current index
-                  setTimeout(() => speakNextChunk(), 0);
+              const timeSinceLastEvent = last > 0 ? now - last : 0;
+              
+              // Check if stuck: speaking but no events for 5+ seconds
+              const isStuck = synth.speaking && timeSinceLastEvent > 5000;
+              
+              // Check if queue empty but still have chunks to read
+              const queueEmpty = !synth.speaking && !synth.pending && 
+                               currentChunkIndexRef.current < chunks.length - 1;
+              
+              if (isStuck || queueEmpty) {
+                  consecutiveStuckChecks++;
+                  
+                  // First attempt: gentle resume
+                  if (consecutiveStuckChecks === 1) {
+                      synth.resume();
+                      synth.pause();
+                      synth.resume();
+                      return;
+                  }
+                  
+                  // Second attempt: restart from current position
+                  if (consecutiveStuckChecks >= 2) {
+                      console.log('[TTS Recovery] Restarting from chunk', currentChunkIndexRef.current);
+                      synth.cancel();
+                      activeUtterancesRef.current.clear();
+                      setTimeout(() => {
+                          if (isSpeaking && !isPaused) {
+                              speakNextChunk();
+                          }
+                      }, 100);
+                      consecutiveStuckChecks = 0;
+                  }
+              } else {
+                  consecutiveStuckChecks = 0;
               }
-          } catch {
-              // no-op
+          } catch (e) {
+              console.error('[TTS Watchdog] Error:', e);
           }
-      }, 2000);
+      }, 1000); // Check every 1s (more aggressive)
+      
       return () => clearInterval(intervalId);
-  }, [isSpeaking, isPaused, speakNextChunk]);
+  }, [isSpeaking, isPaused, ttsEngine, speakNextChunk, chunks.length]);
 
   const toggleSpeech = useCallback(() => {
-    if (voices.length === 0) wakeUpSpeechEngine();
     if (!chunks.length) return;
+    
+    const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
+    
+    if (ttsEngine === 'edge') {
+      // Edge TTS mode (Word-like)
+      const audio = audioRef.current;
+      if (isSpeaking && !isPaused) {
+        // Pause
+        if (audio) audio.pause();
+        setIsPaused(true);
+        return;
+      }
+      if (isPaused) {
+        // Resume
+        setIsPaused(false);
+        if (audio && audio.src) {
+          void audio.play();
+        } else {
+          void playEdgeChunk(startIdx);
+        }
+        return;
+      }
+      // Start
+      window.speechSynthesis.cancel();
+      activeUtterancesRef.current.clear();
+      setIsSpeaking(true);
+      setIsPaused(false);
+      void playEdgeChunk(startIdx);
+      return;
+    }
+    
+    // Browser TTS mode
+    if (voices.length === 0) wakeUpSpeechEngine();
     if (isSpeaking && !isPaused) { 
         // Force Pause (actually Cancel + Save State)
         activeUtterancesRef.current.clear();
@@ -598,10 +870,10 @@ export default function StoryFetcher() {
         // Start fresh or from existing index (if stopped/reset)
         window.speechSynthesis.cancel(); 
         setIsSpeaking(true); setIsPaused(false); 
-        if (currentChunkIndexRef.current >= chunks.length) currentChunkIndexRef.current = 0; 
+        currentChunkIndexRef.current = startIdx;
         speakNextChunk(); 
     }
-  }, [chunks, isSpeaking, isPaused, speakNextChunk, voices]);
+  }, [chunks, isSpeaking, isPaused, speakNextChunk, voices, ttsEngine, playEdgeChunk]);
 
   const jumpToChunk = useCallback((index: number) => { 
     window.speechSynthesis.cancel(); 
@@ -705,7 +977,7 @@ export default function StoryFetcher() {
     } catch (err: any) { setError(err.message || 'Lỗi khi gọi AI.'); } finally { setTranslating(false); }
   };
 
-    const processTranslatedText = (text: string) => {
+    const processTranslatedText = useCallback((text: string) => {
         if (!text) return;
 
         // Also sanitize here so older cached translations still display nicely.
@@ -730,47 +1002,98 @@ export default function StoryFetcher() {
         };
 
         const splitForTts = (input: string): string[] => {
-            const MAX_CHARS = 520; // only split when a paragraph is too long
-            const PACK_CHARS = 320; // pack sentences into chunks around this size
+            // Bigger chunk => fewer transitions => usually smoother.
+            // But too big can cause the browser TTS to stall; allow user to tune.
+            const LIMIT = Math.min(3000, Math.max(200, ttsChunkChars));
+            const SOFT_TARGET = Math.max(200, Math.floor(LIMIT * 0.85));
 
             const paragraphs = input
                 .split(/\n{2,}|\n+/)
                 .map(p => p.trim())
                 .filter(p => p.length > 0);
 
-            const out: string[] = [];
-            for (const p of paragraphs) {
-                if (p.length <= MAX_CHARS) {
-                    out.push(p);
-                    continue;
-                }
+            const isLikelyTitle = (p: string) => {
+                const lower = p.trim().toLowerCase();
+                return lower.startsWith('chương') || p.trim().length < 100;
+            };
 
+            const hardSplit = (s: string): string[] => {
+                const out: string[] = [];
+                let remaining = s.trim();
+                while (remaining.length > LIMIT) {
+                    // Prefer splitting on whitespace near the end.
+                    const windowStart = Math.max(0, LIMIT - 120);
+                    const slice = remaining.slice(windowStart, LIMIT + 1);
+                    const lastSpace = slice.lastIndexOf(' ');
+                    const cutAt = lastSpace > -1 ? windowStart + lastSpace : LIMIT;
+                    out.push(remaining.slice(0, cutAt).trim());
+                    remaining = remaining.slice(cutAt).trim();
+                }
+                if (remaining) out.push(remaining);
+                return out;
+            };
+
+            const out: string[] = [];
+            let buf = '';
+
+            // Keep first paragraph as title chunk if it looks like a chapter title.
+            let startIndex = 0;
+            if (paragraphs.length > 0 && isLikelyTitle(paragraphs[0])) {
+                out.push(paragraphs[0]);
+                startIndex = 1;
+            }
+
+            const flush = () => {
+                const t = buf.trim();
+                if (t) out.push(t);
+                buf = '';
+            };
+
+            for (let pi = startIndex; pi < paragraphs.length; pi++) {
+                const p = paragraphs[pi];
                 const sentences = splitToSentences(p);
-                let buf = '';
-                for (const s of sentences) {
-                    const next = buf ? `${buf} ${s}` : s;
-                    if (next.length <= PACK_CHARS) {
-                        buf = next;
+                for (const sentenceRaw of sentences) {
+                    const sentence = sentenceRaw.replace(/\s+/g, ' ').trim();
+                    if (!sentence) continue;
+
+                    if (!buf) {
+                        if (sentence.length <= LIMIT) {
+                            buf = sentence;
+                            continue;
+                        }
+                        // Single sentence longer than LIMIT
+                        out.push(...hardSplit(sentence));
+                        buf = '';
                         continue;
                     }
-                    if (buf) out.push(buf);
-                    // If a single sentence is still too long, hard-split it.
-                    if (s.length > PACK_CHARS) {
-                        for (let i = 0; i < s.length; i += PACK_CHARS) {
-                            out.push(s.slice(i, i + PACK_CHARS).trim());
-                        }
-                        buf = '';
+
+                    const next = `${buf} ${sentence}`;
+                    if (next.length <= LIMIT) {
+                        buf = next;
+                        // If we've reached soft target, emit early to reduce risk of hitting engine limits.
+                        if (buf.length >= SOFT_TARGET) flush();
+                        continue;
+                    }
+
+                    flush();
+                    if (sentence.length <= LIMIT) {
+                        buf = sentence;
                     } else {
-                        buf = s;
+                        out.push(...hardSplit(sentence));
+                        buf = '';
                     }
                 }
-                if (buf) out.push(buf);
+
+                // Paragraph boundary: emit buffer so UI keeps some structure.
+                flush();
             }
+
+            flush();
             return out;
         };
 
         setChunks(splitForTts(cleaned));
-    };
+    }, [ttsChunkChars]);
   const formatVoiceName = (name: string) => { if (name.includes('HoaiMy')) return '✨ Hoài My'; if (name.includes('NamMinh')) return 'Nam Minh'; return name.replace('Microsoft Server Speech Text to Speech Voice (vi-VN, ', '').replace('Microsoft ', '').replace(')', ''); };
 
   // --- AUTO TRIGGERS ---
@@ -788,6 +1111,8 @@ export default function StoryFetcher() {
 
   return (
     <div className="flex h-[100dvh] w-full bg-slate-100 text-slate-800 font-sans overflow-hidden">
+      {/* Hidden audio element for Edge TTS (Word-like playback) */}
+      <audio ref={audioRef} onEnded={handleEdgeAudioEnded} preload="auto" className="hidden" />
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,300;400;500;600&display=swap'); .font-literata { font-family: 'Literata', serif; }`}</style>
       
       {/* --- MOBILE NAV (BOTTOM) --- */}
@@ -804,6 +1129,9 @@ export default function StoryFetcher() {
          </button>
          <button onClick={() => setShowCache(true)} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showCache ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
              <CheckCircle2 size={20} /> <span className="text-[10px] font-bold">Kho</span>
+         </button>
+         <button onClick={() => setShowConsole(true)} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showConsole ? 'text-green-600 bg-green-50' : 'text-slate-400 hover:text-slate-600'}`}>
+             <Terminal size={20} /> <span className="text-[10px] font-bold">Console</span>
          </button>
       </div>
 
@@ -927,7 +1255,7 @@ export default function StoryFetcher() {
                  {/* Theme & Settings Trigger */}
                  <div className="flex items-center gap-2">
                     <button onClick={() => setShowAppearance(!showAppearance)} className="p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Giao diện"><Palette size={20}/></button>
-                    <button onClick={() => setShowMobileSettings(true)} className="md:hidden p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors"><Settings size={20}/></button>
+                    <button onClick={() => setShowMobileSettings(!showMobileSettings)} className="p-2 hover:bg-slate-100 rounded-full text-slate-600 transition-colors" title="Cài đặt"><Sliders size={20}/></button>
                  </div>
              </div>
          </div>
@@ -1001,14 +1329,14 @@ export default function StoryFetcher() {
 
       {/* --- MODALS & MENUS --- */}
 
-      {/* Settings Modal (Mobile & Desktop Unified for simplicity) */}
-      {(showMobileSettings || showAppearance) && (
+      {/* Appearance Modal (Theme & Font) */}
+      {showAppearance && (
           <div className="fixed inset-0 z-[60] flex items-end md:items-center justify-center sm:p-4">
-              <div onClick={() => { setShowMobileSettings(false); setShowAppearance(false); }} className="absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity"></div>
+              <div onClick={() => setShowAppearance(false)} className="absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity"></div>
               <div className="bg-white w-full md:w-96 rounded-t-2xl md:rounded-2xl border-t md:border border-slate-200 shadow-2xl z-10 overflow-hidden animate-in slide-in-from-bottom-10 md:slide-in-from-bottom-0 md:zoom-in-95">
-                  <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50">
-                      <span className="font-bold text-lg text-slate-800 flex items-center gap-2"><Settings size={20} className="text-slate-500"/> Cài đặt</span>
-                      <button onClick={() => { setShowMobileSettings(false); setShowAppearance(false); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={20}/></button>
+                  <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-gradient-to-r from-purple-50 to-pink-50">
+                      <span className="font-bold text-lg text-slate-800 flex items-center gap-2"><Palette size={20} className="text-purple-500"/> Giao diện</span>
+                      <button onClick={() => setShowAppearance(false)} className="p-1 hover:bg-white/60 rounded-full"><X size={20}/></button>
                   </div>
                   <div className="p-4 space-y-6 max-h-[70vh] overflow-y-auto">
                       {/* Theme */}
@@ -1042,30 +1370,114 @@ export default function StoryFetcher() {
                               <span className="text-xl font-literata">Aa</span>
                           </div>
                       </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Settings Modal (TTS, Auto, Timer) */}
+      {showMobileSettings && (
+          <div className="fixed inset-0 z-[60] flex items-end md:items-center justify-center sm:p-4">
+              <div onClick={() => setShowMobileSettings(false)} className="absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity"></div>
+              <div className="bg-white w-full md:w-[450px] rounded-t-2xl md:rounded-2xl border-t md:border border-slate-200 shadow-2xl z-10 overflow-hidden animate-in slide-in-from-bottom-10 md:slide-in-from-bottom-0 md:zoom-in-95">
+                  <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-gradient-to-r from-blue-50 to-indigo-50">
+                      <span className="font-bold text-lg text-slate-800 flex items-center gap-2"><Sliders size={20} className="text-indigo-500"/> Cài đặt đọc</span>
+                      <button onClick={() => setShowMobileSettings(false)} className="p-1 hover:bg-white/60 rounded-full"><X size={20}/></button>
+                  </div>
+                  <div className="p-4 space-y-6 max-h-[70vh] overflow-y-auto">
 
                       {/* Audio Settings */}
                       <div className="pt-4 border-t border-slate-100">
                           <div className="flex justify-between items-center mb-3">
                               <label className="text-xs font-bold text-slate-400 uppercase">Giọng đọc & Audio</label>
-                              <span className="text-[10px] text-slate-400 max-w-[150px] truncate">{voiceDebugMsg}</span>
+                              <span className="text-[10px] text-slate-400 max-w-[150px] truncate">{ttsEngine === 'edge' ? '✓ Mượt như Word' : voiceDebugMsg}</span>
                           </div>
                           <div className="space-y-4">
+                              {/* TTS Engine Toggle */}
+                              <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-200">
+                                  <div className="text-[10px] font-bold text-emerald-700 mb-2">Chế độ đọc</div>
+                                  <select 
+                                      className="w-full bg-white text-sm focus:outline-none text-slate-700 p-2 rounded border border-emerald-300" 
+                                      value={ttsEngine}
+                                      onChange={(e) => {
+                                          const next = e.target.value as 'browser' | 'edge';
+                                          if (isSpeaking || isPaused) stopSpeech();
+                                          setTtsEngine(next);
+                                      }}
+                                  >
+                                      <option value="edge">Edge TTS (mượt như Word - đang bị chặn, dùng browser)</option>
+                                      <option value="browser">✓ Trình duyệt (đã tối ưu, mượt hơn)</option>
+                                  </select>
+                              </div>
+                              
+                              {ttsEngine === 'edge' ? (
+                                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
+                                      <div className="text-[10px] font-bold text-slate-500 mb-2">Giọng Edge</div>
+                                      <select 
+                                          className="w-full bg-transparent text-sm focus:outline-none text-slate-700" 
+                                          value={edgeVoice}
+                                          onChange={(e) => {
+                                              setEdgeVoice(e.target.value);
+                                              if (ttsEngine === 'edge' && (isSpeaking || isPaused)) stopSpeech();
+                                          }}
+                                      >
+                                          {EDGE_VOICES.map(v => (
+                                              <option key={v.name} value={v.name}>{v.friendlyName}</option>
+                                          ))}
+                                      </select>
+                                  </div>
+                              ) : (
                               <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
                                   <select className="w-full bg-transparent text-sm focus:outline-none text-slate-700" onChange={handleVoiceChange} value={selectedVoice?.name || ""}>
                                       {voices.length === 0 ? <option>Đang tải giọng...</option> : 
                                        voices.map(v => <option key={v.name} value={v.name}>{formatVoiceName(v.name)} ({v.lang})</option>)}
                                   </select>
                               </div>
+                              )}
                               <div className="flex items-center gap-3">
                                   <span className="text-xs font-bold text-slate-500">Tốc độ</span>
                                   <input type="range" min="0.5" max="2.0" step="0.1" value={speechRate} onChange={handleRateChange} className="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"/>
                                   <span className="text-xs font-bold text-slate-700 w-8 text-right">{speechRate}x</span>
+                              </div>
+
+                              <div className="flex items-center gap-3">
+                                  <span className="text-xs font-bold text-slate-500">Độ dài</span>
+                                  <input
+                                      type="range"
+                                      min="200"
+                                      max="3000"
+                                      step="100"
+                                      value={ttsChunkChars}
+                                      onChange={(e) => {
+                                          const v = parseInt(e.target.value);
+                                          setTtsChunkChars(v);
+                                          localStorage.setItem('reader_tts_chunk_chars', String(v));
+                                          if (isSpeaking || isPaused) stopSpeech();
+                                          // Re-split immediately for smoother reading next time.
+                                          if (translatedContent) processTranslatedText(translatedContent);
+                                      }}
+                                      className="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                                  />
+                                  <span className="text-xs font-bold text-slate-700 w-[52px] text-right">{ttsChunkChars}</span>
                               </div>
                               
                               <div className="flex gap-2">
                                   <button onClick={toggleSpeech} className="flex-1 py-2 bg-indigo-100 text-indigo-700 rounded-lg text-sm font-bold flex items-center justify-center gap-2">
                                       {isSpeaking && !isPaused ? <Pause size={16}/> : <Play size={16}/>} {isSpeaking && !isPaused ? 'Tạm dừng' : 'Đọc Ngay'}
                                   </button>
+                                  {(isSpeaking || isPaused) && (
+                                      <button 
+                                          onClick={() => {
+                                              const synth = window.speechSynthesis;
+                                              synth.cancel();
+                                              setTimeout(() => speakNextChunk(), 100);
+                                          }}
+                                          className="px-4 py-2 bg-green-100 text-green-700 rounded-lg shadow-sm font-bold text-sm"
+                                          title="Tiếp tục đọc nếu bị đứng"
+                                      >
+                                          ▶
+                                      </button>
+                                  )}
                                   <button onClick={stopSpeech} className="px-4 py-2 bg-red-100 text-red-600 rounded-lg shadow-sm"><Square size={16}/></button>
                               </div>
                           </div>
@@ -1117,6 +1529,69 @@ export default function StoryFetcher() {
                               <HelpCircle size={20}/> <span className="text-xs font-bold">Giải nghĩa từ</span>
                           </button>
                       </div>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* Console Viewer Bottom Sheet */}
+      {showConsole && (
+          <div className="md:hidden fixed inset-0 z-[60]" onClick={() => setShowConsole(false)}>
+              <div onClick={(e) => e.stopPropagation()} className="absolute bottom-0 left-0 right-0 max-h-[70%] bg-slate-900 border-t border-slate-700 shadow-[0_-10px_40px_rgba(0,0,0,0.3)] rounded-t-2xl z-40 flex flex-col animate-in slide-in-from-bottom-10">
+                  <div className="p-3 border-b border-slate-700 flex justify-between items-center bg-slate-800">
+                      <span className="font-bold text-base text-slate-100 flex items-center gap-2 font-mono">
+                          <Terminal size={18} className="text-green-400"/> Console <span className="text-slate-500 text-xs">({consoleLogs.length})</span>
+                      </span>
+                      <div className="flex items-center gap-2">
+                          <button 
+                              onClick={() => {
+                                  console.log('Test log message');
+                                  console.error('Test error message');
+                                  console.warn('Test warning message');
+                                  console.info('Test info message');
+                              }} 
+                              className="px-3 py-1 text-xs font-bold bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 rounded transition-colors"
+                          >
+                              Test
+                          </button>
+                          <button 
+                              onClick={() => setConsoleLogs([])} 
+                              className="px-3 py-1 text-xs font-bold bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded transition-colors"
+                          >
+                              Clear
+                          </button>
+                          <button onClick={() => setShowConsole(false)} className="p-1 hover:bg-slate-700 rounded-full text-slate-400"><X size={18}/></button>
+                      </div>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-3 font-mono text-xs space-y-1">
+                      {consoleLogs.length === 0 ? (
+                          <div className="text-slate-500 text-center py-8 italic">No logs yet...</div>
+                      ) : (
+                          consoleLogs.map((log, i) => (
+                              <div 
+                                  key={i} 
+                                  className={`p-2 rounded border-l-2 ${
+                                      log.type === 'error' ? 'bg-red-950/30 border-red-500 text-red-300' :
+                                      log.type === 'warn' ? 'bg-yellow-950/30 border-yellow-500 text-yellow-300' :
+                                      log.type === 'info' ? 'bg-blue-950/30 border-blue-500 text-blue-300' :
+                                      'bg-slate-800/50 border-slate-600 text-slate-300'
+                                  }`}
+                              >
+                                  <div className="flex items-start gap-2">
+                                      <span className="text-slate-500 text-[10px] shrink-0 mt-0.5">{log.timestamp}</span>
+                                      <span className={`text-[10px] font-bold shrink-0 mt-0.5 ${
+                                          log.type === 'error' ? 'text-red-400' :
+                                          log.type === 'warn' ? 'text-yellow-400' :
+                                          log.type === 'info' ? 'text-blue-400' :
+                                          'text-slate-400'
+                                      }`}>
+                                          [{log.type.toUpperCase()}]
+                                      </span>
+                                      <pre className="flex-1 whitespace-pre-wrap break-words">{log.message}</pre>
+                                  </div>
+                              </div>
+                          ))
+                      )}
                   </div>
               </div>
           </div>

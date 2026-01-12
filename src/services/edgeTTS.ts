@@ -42,31 +42,55 @@ export class EdgeSpeechService {
     async synthesize(text: string, voice: string, rate: number): Promise<{ audioBlob: Blob, wordBoundaries: any[] }> {
         return new Promise((resolve, reject) => {
             const requestId = generateUUID();
-            const ws = new WebSocket(`wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4&ConnectionId=${requestId}`);
+            // Updated endpoint with proper format (as of 2024+)
+            const wsUrl = `wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1?TrustedClientToken=6A5AA1D4EAFF4E9FB37E23D68491D6F4&ConnectionId=${requestId}`;
+            
+            let ws: WebSocket;
+            try {
+                ws = new WebSocket(wsUrl);
+            } catch (e) {
+                reject(new Error('WebSocket không khả dụng. Hãy chuyển về chế độ Trình duyệt.'));
+                return;
+            }
             
             const audioChunks: BlobPart[] = [];
             const wordBoundaries: any[] = [];
             
+            let wsOpenTimeout: ReturnType<typeof setTimeout>;
+            
             ws.onopen = () => {
-                const configMsg = {
-                    context: {
-                        synthesis: {
-                            audio: {
-                                activityDetection: false,
-                                outputFormat: "audio-24khz-48kbitrate-mono-mp3",
-                                volume: 100,
-                                pitch: 100,
-                                rate: 100
+                clearTimeout(wsOpenTimeout);
+                try {
+                    const configMsg = {
+                        context: {
+                            synthesis: {
+                                audio: {
+                                    metadataOptions: {
+                                        sentenceBoundaryEnabled: false,
+                                        wordBoundaryEnabled: true
+                                    },
+                                    outputFormat: "audio-24khz-48kbitrate-mono-mp3"
+                                }
                             }
                         }
-                    }
-                };
-                
-                ws.send(`X-Timestamp:${getCurrentTime()}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n${JSON.stringify(configMsg)}`);
-                
-                const ssml = createSSML(text, voice, rate);
-                ws.send(`X-Timestamp:${getCurrentTime()}\r\nX-RequestId:${requestId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n${ssml}`);
+                    };
+                    
+                    const timestamp = getCurrentTime();
+                    ws.send(`X-Timestamp:${timestamp}\r\nContent-Type:application/json; charset=utf-8\r\nPath:speech.config\r\n\r\n${JSON.stringify(configMsg)}`);
+                    
+                    const ssml = createSSML(text, voice, rate);
+                    ws.send(`X-Timestamp:${timestamp}\r\nX-RequestId:${requestId}\r\nContent-Type:application/ssml+xml\r\nPath:ssml\r\n\r\n${ssml}`);
+                } catch (e) {
+                    reject(e);
+                }
             };
+
+            wsOpenTimeout = setTimeout(() => {
+                if (ws.readyState !== WebSocket.OPEN) {
+                    ws.close();
+                    reject(new Error('Edge TTS timeout. Endpoint có thể bị chặn - hãy dùng chế độ Trình duyệt.'));
+                }
+            }, 10000);
 
             ws.onmessage = async (event) => {
                 const data = event.data;
@@ -122,13 +146,19 @@ export class EdgeSpeechService {
                 }
             };
 
-            ws.onerror = (e) => {
-                reject(e);
+            ws.onerror = () => {
+                clearTimeout(wsOpenTimeout);
+                reject(new Error('Lỗi Edge TTS: Endpoint bị chặn hoặc mạng lỗi. Hãy chuyển về chế độ Trình duyệt.'));
             };
 
-            ws.onclose = () => {
-                const blob = new Blob(audioChunks, { type: 'audio/mp3' });
-                resolve({ audioBlob: blob, wordBoundaries });
+            ws.onclose = (event) => {
+                clearTimeout(wsOpenTimeout);
+                if (audioChunks.length === 0 && event.code !== 1000) {
+                    reject(new Error(`Edge TTS đóng sớm (code ${event.code}). Endpoint có thể bị chặn - hãy dùng Trình duyệt.`));
+                } else {
+                    const blob = new Blob(audioChunks, { type: 'audio/mp3' });
+                    resolve({ audioBlob: blob, wordBoundaries });
+                }
             };
         });
     }
