@@ -836,6 +836,39 @@ export default function StoryFetcher() {
       audio.src = url;
       await audio.play();
       
+      // Update Media Session for Edge TTS
+      if ('mediaSession' in navigator && translatedContent) {
+        try {
+          let title = 'Đang đọc truyện';
+          const lines = translatedContent.split('\n').filter(l => l.trim());
+          if (lines.length > 0) {
+            title = lines[0].substring(0, 60);
+          }
+          
+          // Create inline SVG icon
+          const svg = `
+            <svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 24 24">
+              <rect width="24" height="24" fill="#4f46e5"/>
+              <path fill="#fbbf24" d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/>
+            </svg>
+          `;
+          const blob = new Blob([svg], { type: 'image/svg+xml' });
+          const iconUrl = URL.createObjectURL(blob);
+          
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: title,
+            artist: 'AI Truyen Reader',
+            album: `Đoạn ${index + 1}/${chunks.length}`,
+            artwork: [
+              { src: iconUrl, sizes: '512x512', type: 'image/svg+xml' }
+            ]
+          });
+          navigator.mediaSession.playbackState = 'playing';
+        } catch (e) {
+          console.error('Media Session error:', e);
+        }
+      }
+      
       // Prefetch next chunks (Word-like smooth buffering)
       void getEdgeAudio(index + 1).catch(() => {});
       void getEdgeAudio(index + 2).catch(() => {});
@@ -843,7 +876,7 @@ export default function StoryFetcher() {
       console.error('Edge TTS error:', e);
       setVoiceDebugMsg(`Lỗi Edge TTS: ${e.message || 'Không rõ'}`);
     }
-  }, [chunks, getEdgeAudio]);
+  }, [chunks, getEdgeAudio, translatedContent]);
 
   // Edge TTS: Handle audio end -> next chunk
   const handleEdgeAudioEnded = useCallback(() => {
@@ -1133,6 +1166,13 @@ export default function StoryFetcher() {
       activeUtterancesRef.current.clear();
       setIsSpeaking(true);
       setIsPaused(false);
+      
+      // Update Media Session
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.playbackState = 'playing';
+        updateMediaSessionMetadata();
+      }
+      
       void playEdgeChunk(startIdx);
       return;
     }
@@ -1165,6 +1205,15 @@ export default function StoryFetcher() {
         window.speechSynthesis.cancel(); 
         setIsSpeaking(true); setIsPaused(false); 
         currentChunkIndexRef.current = startIdx;
+        
+        // Update Media Session
+        setTimeout(() => {
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.playbackState = 'playing';
+            updateMediaSessionMetadata();
+          }
+        }, 0);
+        
         speakNextChunk(); 
     }
   }, [chunks, isSpeaking, isPaused, speakNextChunk, voices, ttsEngine, playEdgeChunk]);
@@ -1202,6 +1251,50 @@ export default function StoryFetcher() {
   const handleRateChange = (e: React.ChangeEvent<HTMLInputElement>) => { const newRate = parseFloat(e.target.value); setSpeechRate(newRate); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); setTimeout(() => speakNextChunk(), 50); }};
   const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => { const v = voices.find(val => val.name === e.target.value); if (v) { setSelectedVoice(v); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); setTimeout(() => speakNextChunk(), 50); }}};
 
+  // Update Media Session Metadata
+  const updateMediaSessionMetadata = useCallback(() => {
+    if (!('mediaSession' in navigator)) return;
+    
+    try {
+      let title = 'Đang đọc truyện';
+      if (translatedContent) {
+        const lines = translatedContent.split('\n').filter(l => l.trim());
+        if (lines.length > 0) {
+          title = lines[0].substring(0, 60);
+        }
+      }
+      
+      // Create inline SVG icon as blob
+      const svgIcon = `
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="512" height="512">
+          <defs>
+            <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+              <stop offset="0%" style="stop-color:#4f46e5;stop-opacity:1" />
+              <stop offset="100%" style="stop-color:#7c3aed;stop-opacity:1" />
+            </linearGradient>
+          </defs>
+          <rect width="100" height="100" fill="url(#bg)" rx="20"/>
+          <path d="M 30 25 L 30 75 L 45 75 L 45 25 Z M 55 25 L 55 75 L 70 75 L 70 25 Z" fill="white" opacity="0.9"/>
+          <circle cx="75" cy="25" r="8" fill="#fbbf24"/>
+          <path d="M 75 20 L 76 23 L 79 23 L 77 25 L 78 28 L 75 26 L 72 28 L 73 25 L 71 23 L 74 23 Z" fill="white"/>
+        </svg>
+      `;
+      const blob = new Blob([svgIcon], { type: 'image/svg+xml' });
+      const iconUrl = URL.createObjectURL(blob);
+      
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: title,
+        artist: 'AI Truyen Reader',
+        album: url ? new URL(url).hostname : 'Truyện',
+        artwork: [
+          { src: iconUrl, sizes: '512x512', type: 'image/svg+xml' }
+        ]
+      });
+    } catch (error) {
+      console.error('Media Session metadata error:', error);
+    }
+  }, [translatedContent, url]);
+
   // Setup Media Session handlers once
   useEffect(() => {
     if (!('mediaSession' in navigator)) return;
@@ -1230,10 +1323,13 @@ export default function StoryFetcher() {
       navigator.mediaSession.setActionHandler('stop', () => {
         stopSpeech();
       });
+      
+      // Initialize metadata on mount
+      updateMediaSessionMetadata();
     } catch (error) {
       console.error('Media Session setup error:', error);
     }
-  }, [chunks.length, jumpToChunk, stopSpeech]);
+  }, [chunks.length, jumpToChunk, stopSpeech, updateMediaSessionMetadata]);
 
   const analyzeContent = async (type: 'summary' | 'explain') => {
     if (!translatedContent && !content) return;
@@ -1440,7 +1536,22 @@ export default function StoryFetcher() {
   return (
     <div className="flex h-[100dvh] w-full bg-slate-100 text-slate-800 font-sans overflow-hidden">
       {/* Hidden audio element for Edge TTS (Word-like playback) */}
-      <audio ref={audioRef} onEnded={handleEdgeAudioEnded} preload="auto" className="hidden" />
+      <audio 
+        ref={audioRef} 
+        onEnded={handleEdgeAudioEnded} 
+        onPlay={() => {
+          if ('mediaSession' in navigator) {
+            navigator.mediaSession.playbackState = 'playing';
+          }
+        }}
+        onPause={() => {
+          if ('mediaSession' in navigator && !audioRef.current?.ended) {
+            navigator.mediaSession.playbackState = 'paused';
+          }
+        }}
+        preload="auto" 
+        className="hidden" 
+      />
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,300;400;500;600&display=swap'); .font-literata { font-family: 'Literata', serif; }`}</style>
       
       {/* --- MOBILE NAV (BOTTOM) --- */}
