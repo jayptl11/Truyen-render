@@ -130,6 +130,9 @@ export default function StoryFetcher() {
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [selectedChaptersForExport, setSelectedChaptersForExport] = useState<string[]>([]);
   const [chapterStartTime, setChapterStartTime] = useState<number | null>(null);
+  
+  // Mini Player state
+  const [miniPlayerExpanded, setMiniPlayerExpanded] = useState(false);
 
   // Edge TTS refs
   const edgeServiceRef = useRef<EdgeSpeechService | null>(null);
@@ -825,7 +828,7 @@ export default function StoryFetcher() {
   }, [chunks, edgeVoice, speechRate]);
 
   // Edge TTS: Play specific chunk
-  const playEdgeChunk = useCallback(async (index: number) => {
+  const playEdgeChunk = useCallback(async (index: number, retryCount = 0) => {
     const audio = audioRef.current;
     if (!audio || index < 0 || index >= chunks.length) return;
     
@@ -845,10 +848,25 @@ export default function StoryFetcher() {
       void getEdgeAudio(index + 1).catch(() => {});
       void getEdgeAudio(index + 2).catch(() => {});
     } catch (e: any) {
-      console.error('Edge TTS error:', e);
-      setVoiceDebugMsg(`Lỗi Edge TTS: ${e.message || 'Không rõ'}`);
+      console.error(`Edge TTS error (attempt ${retryCount + 1}/3):`, e);
+      
+      // Auto retry up to 3 times with exponential backoff
+      if (retryCount < 2 && isSpeaking && !isPaused && ttsEngine === 'edge') {
+        const delay = Math.min(1000 * Math.pow(2, retryCount), 4000); // 1s, 2s, 4s max
+        console.log(`[TTS Recovery] Retrying chunk ${index} after ${delay}ms...`);
+        setTimeout(() => {
+          if (isSpeaking && !isPaused && ttsEngine === 'edge' && playTokenRef.current === token) {
+            void playEdgeChunk(index, retryCount + 1);
+          }
+        }, delay);
+      } else {
+        // Max retries reached, show error and stop
+        setVoiceDebugMsg(`Lỗi Edge TTS sau ${retryCount + 1} lần thử: ${e.message || 'Không rõ'}. Hãy thử chuyển về Browser TTS.`);
+        setIsSpeaking(false);
+        setIsPaused(false);
+      }
     }
-  }, [chunks, getEdgeAudio]);
+  }, [chunks, getEdgeAudio, isSpeaking, isPaused, ttsEngine]);
 
   // Edge TTS: Handle audio end -> next chunk
   const handleEdgeAudioEnded = useCallback(() => {
@@ -1009,14 +1027,22 @@ export default function StoryFetcher() {
      
   }, [prepareUtterance, chunks]);
 
-  // Watchdog: Aggressive recovery when browser TTS gets stuck
+  // Watchdog: Aggressive recovery when browser TTS gets stuck (ONLY for browser TTS, NOT Edge)
   useEffect(() => {
-      if (!isSpeaking || isPaused || ttsEngine === 'edge') return;
+      // CRITICAL: Only run for browser TTS mode
+      if (ttsEngine !== 'browser') return;
+      if (!isSpeaking || isPaused) return;
       
       const synth = window.speechSynthesis;
       let consecutiveStuckChecks = 0;
       
       const intervalId = setInterval(() => {
+          // Double-check we're still in browser mode
+          if (ttsEngine !== 'browser') {
+              clearInterval(intervalId);
+              return;
+          }
+          
           try {
               // Force resume if paused (browser bug workaround)
               if (synth.paused) {
@@ -1051,7 +1077,7 @@ export default function StoryFetcher() {
                       synth.cancel();
                       activeUtterancesRef.current.clear();
                       setTimeout(() => {
-                          if (isSpeaking && !isPaused) {
+                          if (isSpeaking && !isPaused && ttsEngine === 'browser') {
                               speakNextChunk();
                           }
                       }, 100);
@@ -1067,6 +1093,63 @@ export default function StoryFetcher() {
       
       return () => clearInterval(intervalId);
   }, [isSpeaking, isPaused, ttsEngine, speakNextChunk, chunks.length]);
+
+  // Edge TTS Watchdog: Detect stuck audio playback
+  useEffect(() => {
+      // Only run for Edge TTS mode
+      if (ttsEngine !== 'edge') return;
+      if (!isSpeaking || isPaused) return;
+      
+      const audio = audioRef.current;
+      if (!audio) return;
+      
+      let lastTime = audio.currentTime;
+      let stuckCount = 0;
+      
+      const intervalId = setInterval(() => {
+          // Double-check we're still in Edge mode
+          if (ttsEngine !== 'edge') {
+              clearInterval(intervalId);
+              return;
+          }
+          
+          try {
+              const currentTime = audio.currentTime;
+              
+              // Check if audio is supposed to be playing but isn't progressing
+              if (!audio.paused && !audio.ended && currentTime === lastTime && audio.readyState >= 2) {
+                  stuckCount++;
+                  
+                  if (stuckCount >= 3) {
+                      // Audio stuck for 3+ seconds, try to recover
+                      console.log('[Edge TTS Recovery] Audio stuck, restarting chunk', currentChunkIndexRef.current);
+                      const currentChunk = currentChunkIndexRef.current;
+                      audio.pause();
+                      audio.currentTime = 0;
+                      
+                      // Clear cache for this chunk to force refetch
+                      audioCacheRef.current.delete(currentChunk);
+                      
+                      setTimeout(() => {
+                          if (isSpeaking && !isPaused && ttsEngine === 'edge') {
+                              void playEdgeChunk(currentChunk);
+                          }
+                      }, 100);
+                      
+                      stuckCount = 0;
+                  }
+              } else {
+                  stuckCount = 0;
+              }
+              
+              lastTime = currentTime;
+          } catch (e) {
+              console.error('[Edge TTS Watchdog] Error:', e);
+          }
+      }, 1000); // Check every 1s
+      
+      return () => clearInterval(intervalId);
+  }, [isSpeaking, isPaused, ttsEngine, playEdgeChunk]);
 
   const toggleSpeech = useCallback(() => {
     if (!chunks.length) return;
@@ -1408,6 +1491,11 @@ export default function StoryFetcher() {
          <button onClick={() => setShowExportMenu(true)} disabled={!translatedContent && translatedChapters.length === 0} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showExportMenu ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'} disabled:opacity-30`}>
              <Download size={20} /> <span className="text-[10px] font-bold">Tải</span>
          </button>
+         <button onClick={() => setShowHistory(true)} className={`relative flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showHistory ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
+             <HistoryIcon size={20} /> 
+             <span className="text-[10px] font-bold">Lịch sử</span>
+             {history.length > 0 && <span className="absolute top-2 right-4 w-2 h-2 bg-blue-500 rounded-full border border-white"></span>}
+         </button>
          <button onClick={() => setShowCache(true)} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showCache ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
              <CheckCircle2 size={20} /> <span className="text-[10px] font-bold">Kho</span>
          </button>
@@ -1535,14 +1623,17 @@ export default function StoryFetcher() {
                 )}
             </div>
 
-             <div className="flex items-center gap-2 md:gap-4">
-                 {/* Desktop Audio Controls */}
-                 <div className="hidden md:flex bg-slate-100 rounded-full p-1 items-center gap-1 border border-slate-200">
-                    <button onClick={toggleSpeech} disabled={!chunks.length} data-tts-toggle className={`p-2 rounded-full transition-colors ${isSpeaking && !isPaused ? 'bg-indigo-100 text-indigo-600' : 'hover:bg-white text-slate-600'}`}>{isSpeaking && !isPaused ? <Pause size={18}/> : <Play size={18}/>}</button>
-                    <button onClick={stopSpeech} disabled={!isSpeaking && !isPaused} className="p-2 hover:bg-white text-slate-600 rounded-full transition-colors"><Square size={18}/></button>
-                    <div className="w-px h-4 bg-slate-300 mx-1"></div>
-                    <button onClick={() => setIsAutoMode(!isAutoMode)} className={`px-3 py-1.5 text-xs font-bold rounded-full transition-all flex items-center gap-1 ${isAutoMode ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:bg-white'}`}><InfinityIcon size={14}/> Auto</button>
+             <div className="flex items-center gap-2 md:gap-3">
+                 {/* Desktop Audio Controls - Always visible */}
+                 <div className="hidden md:flex items-center gap-1">
+                    <button onClick={toggleSpeech} disabled={!chunks.length} data-tts-toggle className={`p-2 rounded-full transition-all ${isSpeaking && !isPaused ? 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white shadow-lg' : 'bg-slate-100 hover:bg-slate-200 text-slate-600'} disabled:opacity-30`} title="Phát/Dừng đọc">{isSpeaking && !isPaused ? <Pause size={20}/> : <Play size={20}/>}</button>
+                    <button onClick={stopSpeech} disabled={!isSpeaking && !isPaused} className="p-2 bg-slate-100 hover:bg-red-100 text-slate-600 hover:text-red-600 rounded-full transition-colors disabled:opacity-30" title="Dừng hoàn toàn"><Square size={18}/></button>
                  </div>
+                 
+                 {/* Auto Mode Toggle - Prominent position */}
+                 <button onClick={() => setIsAutoMode(!isAutoMode)} className={`hidden md:flex px-4 py-2 text-sm font-bold rounded-full transition-all items-center gap-2 shadow-md ${isAutoMode ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-emerald-500/30' : 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200'}`} title="Tự động đọc chương tiếp theo"><InfinityIcon size={16}/> {isAutoMode ? 'Auto ON' : 'Auto OFF'}</button>
+                 
+                 <div className="w-px h-6 bg-slate-300 hidden md:block"></div>
                  
                  {/* Theme & Settings Trigger */}
                  <div className="flex items-center gap-2">
@@ -1636,6 +1727,150 @@ export default function StoryFetcher() {
              )}
          </div>
       </div>
+
+      {/* --- FLOATING MINI PLAYER (Mobile & Desktop) --- */}
+      {chunks.length > 0 && (
+          <div className="fixed bottom-[72px] md:bottom-6 right-4 z-[55]">
+              {/* Compact Bubble */}
+              {!miniPlayerExpanded ? (
+                  <button
+                      onClick={() => setMiniPlayerExpanded(true)}
+                      className="group relative"
+                  >
+                      {/* Main Bubble */}
+                      <div className="w-14 h-14 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 shadow-2xl flex items-center justify-center cursor-pointer hover:scale-110 transition-transform duration-300 border-2 border-white/30">
+                          {isSpeaking && !isPaused ? (
+                              <Pause size={24} className="text-white drop-shadow-lg"/>
+                          ) : (
+                              <Play size={24} className="text-white drop-shadow-lg ml-0.5"/>
+                          )}
+                      </div>
+                      
+                      {/* Indicator Dots */}
+                      {isSpeaking && !isPaused && (
+                          <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-400 rounded-full border-2 border-white animate-pulse"></div>
+                      )}
+                      
+                      {isAutoMode && (
+                          <div className="absolute -bottom-1 -left-1 w-4 h-4 bg-yellow-400 rounded-full border-2 border-white flex items-center justify-center">
+                              <InfinityIcon size={8} className="text-slate-800"/>
+                          </div>
+                      )}
+                      
+                      {/* Progress Ring */}
+                      {activeChunkIndex !== null && chunks.length > 0 && (
+                          <svg className="absolute inset-0 w-14 h-14 -rotate-90">
+                              <circle
+                                  cx="28"
+                                  cy="28"
+                                  r="26"
+                                  stroke="rgba(255,255,255,0.2)"
+                                  strokeWidth="2"
+                                  fill="none"
+                              />
+                              <circle
+                                  cx="28"
+                                  cy="28"
+                                  r="26"
+                                  stroke="white"
+                                  strokeWidth="2"
+                                  fill="none"
+                                  strokeDasharray={`${2 * Math.PI * 26}`}
+                                  strokeDashoffset={`${2 * Math.PI * 26 * (1 - (activeChunkIndex / chunks.length))}`}
+                                  className="transition-all duration-300"
+                              />
+                          </svg>
+                      )}
+                      
+                      {/* Tooltip */}
+                      <div className="absolute bottom-full right-0 mb-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
+                          <div className="bg-slate-900 text-white text-xs px-3 py-1.5 rounded-lg shadow-lg whitespace-nowrap">
+                              {isSpeaking && !isPaused ? 'Đang phát' : 'Bấm để phát'} • {activeChunkIndex !== null ? `${activeChunkIndex + 1}/${chunks.length}` : `${chunks.length} đoạn`}
+                          </div>
+                      </div>
+                  </button>
+              ) : (
+                  /* Expanded Bubble */
+                  <div className="bg-white rounded-3xl shadow-2xl p-4 w-72 border border-slate-200 animate-in zoom-in-95 slide-in-from-bottom-5">
+                      {/* Header */}
+                      <div className="flex items-center justify-between mb-3">
+                          <div className="flex items-center gap-2">
+                              <div className={`w-2 h-2 rounded-full ${isSpeaking && !isPaused ? 'bg-green-500 animate-pulse' : 'bg-slate-300'}`}></div>
+                              <span className="text-sm font-bold text-slate-700">
+                                  {isSpeaking && !isPaused ? 'Đang đọc' : isPaused ? 'Tạm dừng' : 'Media Player'}
+                              </span>
+                          </div>
+                          <button 
+                              onClick={() => setMiniPlayerExpanded(false)}
+                              className="text-slate-400 hover:text-slate-600 transition-colors"
+                          >
+                              <X size={18}/>
+                          </button>
+                      </div>
+
+                      {/* Progress */}
+                      <div className="mb-3">
+                          <div className="flex justify-between text-xs text-slate-500 mb-1">
+                              <span>Đoạn {activeChunkIndex !== null ? activeChunkIndex + 1 : 0}</span>
+                              <span>{chunks.length} đoạn</span>
+                          </div>
+                          <div className="h-1 bg-slate-200 rounded-full overflow-hidden">
+                              <div 
+                                  className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
+                                  style={{ width: `${((activeChunkIndex || 0) / chunks.length) * 100}%` }}
+                              ></div>
+                          </div>
+                      </div>
+
+                      {/* Controls */}
+                      <div className="flex items-center justify-center gap-3 mb-3">
+                          <button 
+                              onClick={stopSpeech} 
+                              disabled={!isSpeaking && !isPaused}
+                              className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-all disabled:opacity-30"
+                          >
+                              <Square size={16}/>
+                          </button>
+                          
+                          <button 
+                              onClick={toggleSpeech} 
+                              disabled={!chunks.length}
+                              className="w-12 h-12 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white flex items-center justify-center shadow-lg transition-all active:scale-95 disabled:opacity-50"
+                          >
+                              {isSpeaking && !isPaused ? <Pause size={24}/> : <Play size={24} className="ml-0.5"/>}
+                          </button>
+                          
+                          <button 
+                              onClick={() => setShowMobileSettings(true)}
+                              className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-all"
+                          >
+                              <Sliders size={16}/>
+                          </button>
+                      </div>
+
+                      {/* Auto Mode */}
+                      <button 
+                          onClick={() => setIsAutoMode(!isAutoMode)}
+                          className={`w-full py-2 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 ${
+                              isAutoMode 
+                                  ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-md' 
+                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
+                          }`}
+                      >
+                          <InfinityIcon size={16}/>
+                          {isAutoMode ? 'Auto Đang Bật' : 'Bật Auto Mode'}
+                      </button>
+
+                      {/* Info */}
+                      {voiceDebugMsg && (
+                          <div className="mt-2 text-[10px] text-slate-400 text-center">
+                              {voiceDebugMsg}
+                          </div>
+                      )}
+                  </div>
+              )}
+          </div>
+      )}
 
       {/* --- MODALS & MENUS --- */}
 
