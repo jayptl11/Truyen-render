@@ -194,7 +194,7 @@ export default function StoryFetcher() {
     const savedMergeCount = localStorage.getItem('reader_tts_merge_count');
     if (savedMergeCount) {
         const n = parseInt(savedMergeCount);
-        if (!Number.isNaN(n)) setTtsMergeCount(Math.min(12, Math.max(1, n)));
+        if (!Number.isNaN(n)) setTtsMergeCount(Math.min(100, Math.max(1, n)));
     }
     const savedHistory = localStorage.getItem('reader_history');
     if (savedHistory) {
@@ -216,10 +216,10 @@ export default function StoryFetcher() {
     }
   }, []);
 
-    const clampMergeCount = useCallback((n: number) => {
-            if (!Number.isFinite(n)) return 1;
-            return Math.min(12, Math.max(1, Math.floor(n)));
-    }, []);
+      const clampMergeCount = useCallback((n: number) => {
+          if (!Number.isFinite(n)) return 1;
+          return Math.min(100, Math.max(1, Math.floor(n)));
+      }, []);
 
   const saveToHistory = (url: string, contentSnippet: string) => {
       if (!url) return;
@@ -2095,7 +2095,7 @@ export default function StoryFetcher() {
                                   <input
                                       type="number"
                                       min={1}
-                                      max={12}
+                                      max={100}
                                       value={ttsMergeCount}
                                       onChange={(e) => {
                                           const v = clampMergeCount(parseInt(e.target.value || '1'));
@@ -2103,7 +2103,7 @@ export default function StoryFetcher() {
                                           localStorage.setItem('reader_tts_merge_count', String(v));
                                           if (isSpeaking || isPaused) stopSpeech();
                                       }}
-                                      className="w-24 bg-white text-sm focus:outline-none text-slate-700 p-2 rounded border border-slate-300"
+                                      className="w-28 bg-white text-sm focus:outline-none text-slate-700 p-2 rounded border border-slate-300"
                                   />
                                   <span className="text-xs text-slate-500">đoạn/lần đọc</span>
                               </div>
