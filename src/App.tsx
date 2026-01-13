@@ -195,6 +195,14 @@ export default function StoryFetcher() {
     if (savedChunksToMerge) {
         const n = parseInt(savedChunksToMerge);
         if (!Number.isNaN(n)) setChunksToMerge(Math.min(10, Math.max(1, n)));
+    } else {
+        // Auto-detect mobile và set default thấp hơn
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        if (isMobile) {
+            console.log('[Init] Mobile detected, setting chunksToMerge to 2');
+            setChunksToMerge(2); // Mobile default thấp hơn
+            localStorage.setItem('reader_chunks_to_merge', '2');
+        }
     }
     
     // Load TTS settings
@@ -1007,14 +1015,38 @@ export default function StoryFetcher() {
   const prepareUtterance = useCallback((index: number) => {
     if (index >= chunks.length || index < 0) return null;
 
-    // Gộp nhiều chunks lại để đọc mượt hơn
+    // Detect mobile
+    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+    
+    // Mobile browser có giới hạn độ dài text cho TTS (~5000 chars an toàn)
+    // Nếu gộp quá nhiều sẽ fail im lặng
+    const MAX_TEXT_LENGTH = isMobile ? 5000 : 15000;
+    
+    // Gộp nhiều chunks lại nhưng giới hạn độ dài
     const mergedChunks: string[] = [];
+    let totalLength = 0;
+    
     for (let i = 0; i < chunksToMerge && index + i < chunks.length; i++) {
-        mergedChunks.push(chunks[index + i]);
+        const nextChunk = chunks[index + i];
+        if (totalLength + nextChunk.length > MAX_TEXT_LENGTH) {
+            // Đã đủ dài, dừng gộp
+            if (mergedChunks.length === 0) {
+                // Ít nhất phải có 1 chunk
+                mergedChunks.push(nextChunk.substring(0, MAX_TEXT_LENGTH));
+            }
+            break;
+        }
+        mergedChunks.push(nextChunk);
+        totalLength += nextChunk.length;
     }
+    
     const chunkText = mergedChunks.join(' ');
     
-    const utterance = new SpeechSynthesisUtterance(chunkText);
+    if (chunkText.length > MAX_TEXT_LENGTH) {
+        console.warn('[TTS] Text too long:', chunkText.length, 'chars, truncating to', MAX_TEXT_LENGTH);
+    }
+    
+    const utterance = new SpeechSynthesisUtterance(chunkText.substring(0, MAX_TEXT_LENGTH));
     utterance.rate = speechRate;
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
@@ -1061,7 +1093,17 @@ export default function StoryFetcher() {
          if (!activeUtterancesRef.current.has(utterance)) return;
          activeUtterancesRef.current.delete(utterance);
          if (e.error !== 'interrupted' && e.error !== 'canceled') {
-             console.error('Speech error', e);
+             console.error('[TTS] Speech error:', e.error, 'at chunk', index);
+             
+             // Nếu text-too-long error trên mobile, tự động giảm chunksToMerge
+             const isMobile = /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent);
+             if (isMobile && e.error === 'text-too-long' && chunksToMerge > 1) {
+                 const newMerge = Math.max(1, chunksToMerge - 1);
+                 console.warn('[TTS] Text too long on mobile, reducing merge to', newMerge);
+                 setChunksToMerge(newMerge);
+                 localStorage.setItem('reader_chunks_to_merge', String(newMerge));
+             }
+             
              // Skip to next merged group
              scheduleNext(index + chunksToMerge);
          }
@@ -1087,8 +1129,12 @@ export default function StoryFetcher() {
      
       console.log('[TTS] Starting speech from chunk', startIdx);
       
+      // Mobile cần queue ít hơn để tránh memory issues
+      const isMobile = /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      const baseQueue = isMobile ? 4 : 8;
+      
       // Queue merged chunks - điều chỉnh số lượng queue theo chunksToMerge
-      const queueCount = Math.ceil(8 / chunksToMerge);
+      const queueCount = Math.ceil(baseQueue / chunksToMerge);
       let queuedCount = 0;
       
       for (let i = 0; i < queueCount; i++) {
