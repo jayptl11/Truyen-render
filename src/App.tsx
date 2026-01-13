@@ -86,6 +86,7 @@ export default function StoryFetcher() {
   const [isPaused, setIsPaused] = useState(false);
   const [speechRate, setSpeechRate] = useState(1.0);
   const [ttsChunkChars, setTtsChunkChars] = useState(650);
+    const [ttsMergeCount, setTtsMergeCount] = useState(3);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
   const [voiceDebugMsg, setVoiceDebugMsg] = useState('');
@@ -190,6 +191,11 @@ export default function StoryFetcher() {
         const n = parseInt(savedChunkChars);
         if (!Number.isNaN(n)) setTtsChunkChars(Math.min(3000, Math.max(200, n)));
     }
+    const savedMergeCount = localStorage.getItem('reader_tts_merge_count');
+    if (savedMergeCount) {
+        const n = parseInt(savedMergeCount);
+        if (!Number.isNaN(n)) setTtsMergeCount(Math.min(12, Math.max(1, n)));
+    }
     const savedHistory = localStorage.getItem('reader_history');
     if (savedHistory) {
         try { setHistory(JSON.parse(savedHistory)); } catch {}
@@ -209,6 +215,11 @@ export default function StoryFetcher() {
         try { setReadingStats(JSON.parse(savedStats)); } catch {}
     }
   }, []);
+
+    const clampMergeCount = useCallback((n: number) => {
+            if (!Number.isFinite(n)) return 1;
+            return Math.min(12, Math.max(1, Math.floor(n)));
+    }, []);
 
   const saveToHistory = (url: string, contentSnippet: string) => {
       if (!url) return;
@@ -800,63 +811,85 @@ export default function StoryFetcher() {
     setIsSpeaking(false); setIsPaused(false); setActiveChunkIndex(null); setActiveCharIndex(null); currentChunkIndexRef.current = 0;
   }, []);
 
-  // Edge TTS: Get or fetch audio URL for chunk (Word-like buffering)
-  const getEdgeAudio = useCallback(async (index: number): Promise<string> => {
-    if (index < 0 || index >= chunks.length) throw new Error('Invalid index');
+    const buildTtsBatch = useCallback((startIndex: number) => {
+        const merge = clampMergeCount(ttsMergeCount);
+        const indices: number[] = [];
+        const offsets: number[] = [];
+        let text = '';
+
+        for (let i = 0; i < merge; i++) {
+            const idx = startIndex + i;
+            if (idx >= chunks.length) break;
+            const part = chunks[idx];
+            indices.push(idx);
+            offsets.push(text.length);
+            text += part;
+            if (i < merge - 1 && idx + 1 < chunks.length) {
+                text += '\n\n';
+            }
+        }
+
+        return { text, indices, offsets, merge };
+    }, [chunks, ttsMergeCount, clampMergeCount]);
+
+    // Edge TTS: Get or fetch audio URL for a batch starting at startIndex
+    const getEdgeAudio = useCallback(async (startIndex: number): Promise<string> => {
+        if (startIndex < 0 || startIndex >= chunks.length) throw new Error('Invalid index');
     
-    const cached = audioCacheRef.current.get(index);
+        const cached = audioCacheRef.current.get(startIndex);
     if (cached) return cached;
     
-    const inFlight = audioInFlightRef.current.get(index);
+        const inFlight = audioInFlightRef.current.get(startIndex);
     if (inFlight) return await inFlight;
     
     const promise = (async () => {
       if (!edgeServiceRef.current) edgeServiceRef.current = new EdgeSpeechService();
-      const text = chunks[index];
+            const { text } = buildTtsBatch(startIndex);
       const { audioBlob } = await edgeServiceRef.current.synthesize(text, edgeVoice, speechRate);
       const url = URL.createObjectURL(audioBlob);
-      audioCacheRef.current.set(index, url);
+            audioCacheRef.current.set(startIndex, url);
       return url;
     })();
     
-    audioInFlightRef.current.set(index, promise);
+        audioInFlightRef.current.set(startIndex, promise);
     try {
       return await promise;
     } finally {
-      audioInFlightRef.current.delete(index);
+            audioInFlightRef.current.delete(startIndex);
     }
-  }, [chunks, edgeVoice, speechRate]);
+    }, [chunks.length, buildTtsBatch, edgeVoice, speechRate]);
 
-  // Edge TTS: Play specific chunk
-  const playEdgeChunk = useCallback(async (index: number, retryCount = 0) => {
-    const audio = audioRef.current;
-    if (!audio || index < 0 || index >= chunks.length) return;
+    // Edge TTS: Play specific batch
+    const playEdgeChunk = useCallback(async (startIndex: number, retryCount = 0) => {
+        const audio = audioRef.current;
+        if (!audio || startIndex < 0 || startIndex >= chunks.length) return;
     
     const token = playTokenRef.current;
-    setActiveChunkIndex(index);
+        setActiveChunkIndex(startIndex);
     setActiveCharIndex(null);
-    currentChunkIndexRef.current = index;
+        currentChunkIndexRef.current = startIndex;
     
     try {
-      const url = await getEdgeAudio(index);
+            const url = await getEdgeAudio(startIndex);
       if (playTokenRef.current !== token) return; // Cancelled
       
       audio.src = url;
       await audio.play();
       
       // Prefetch next chunks (Word-like smooth buffering)
-      void getEdgeAudio(index + 1).catch(() => {});
-      void getEdgeAudio(index + 2).catch(() => {});
+            const step = clampMergeCount(ttsMergeCount);
+            void getEdgeAudio(startIndex + step).catch(() => {});
+            void getEdgeAudio(startIndex + step * 2).catch(() => {});
     } catch (e: any) {
       console.error(`Edge TTS error (attempt ${retryCount + 1}/3):`, e);
       
       // Auto retry up to 3 times with exponential backoff
       if (retryCount < 2 && isSpeaking && !isPaused && ttsEngine === 'edge') {
         const delay = Math.min(1000 * Math.pow(2, retryCount), 4000); // 1s, 2s, 4s max
-        console.log(`[TTS Recovery] Retrying chunk ${index} after ${delay}ms...`);
+                console.log(`[TTS Recovery] Retrying chunk ${startIndex} after ${delay}ms...`);
         setTimeout(() => {
           if (isSpeaking && !isPaused && ttsEngine === 'edge' && playTokenRef.current === token) {
-            void playEdgeChunk(index, retryCount + 1);
+                        void playEdgeChunk(startIndex, retryCount + 1);
           }
         }, delay);
       } else {
@@ -866,13 +899,14 @@ export default function StoryFetcher() {
         setIsPaused(false);
       }
     }
-  }, [chunks, getEdgeAudio, isSpeaking, isPaused, ttsEngine]);
+    }, [chunks.length, getEdgeAudio, isSpeaking, isPaused, ttsEngine, ttsMergeCount, clampMergeCount]);
 
-  // Edge TTS: Handle audio end -> next chunk
+    // Edge TTS: Handle audio end -> next batch
   const handleEdgeAudioEnded = useCallback(() => {
     if (ttsEngine !== 'edge' || !isSpeaking || isPaused) return;
     
-    const next = currentChunkIndexRef.current + 1;
+        const step = clampMergeCount(ttsMergeCount);
+        const next = currentChunkIndexRef.current + step;
     if (next >= chunks.length) {
       // End of chapter
       if (autoModeRef.current && nextChapterUrl) {
@@ -885,7 +919,7 @@ export default function StoryFetcher() {
     }
     
     void playEdgeChunk(next);
-  }, [ttsEngine, isSpeaking, isPaused, chunks.length, nextChapterUrl, playEdgeChunk]);
+    }, [ttsEngine, isSpeaking, isPaused, chunks.length, nextChapterUrl, playEdgeChunk, ttsMergeCount, clampMergeCount]);
 
   const loadChapter = async (targetUrl: string, isAutoNav = false) => {
       stopSpeech();
@@ -936,41 +970,79 @@ export default function StoryFetcher() {
       fetchContent(targetUrl);
   };
 
-  const prepareUtterance = useCallback((index: number) => {
-    if (index >= chunks.length || index < 0) return null;
+    const prepareUtterance = useCallback((startIndex: number) => {
+        if (startIndex >= chunks.length || startIndex < 0) return null;
 
-    const chunkText = chunks[index];
-    const utterance = new SpeechSynthesisUtterance(chunkText);
+        const batch = buildTtsBatch(startIndex);
+        if (!batch.text) return null;
+
+        const utterance = new SpeechSynthesisUtterance(batch.text);
     utterance.rate = speechRate;
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
     utterance.lang = selectedVoice?.lang || 'vi-VN';
     if (selectedVoice) utterance.voice = selectedVoice;
 
-    const QUEUE_AHEAD = 5; // Tăng buffer để mượt hơn (giống Word)
+        const QUEUE_BATCHES = 3; // Giữ một buffer nhỏ phía trước để mượt
 
     utterance.onstart = () => {
-         setActiveChunkIndex(index);
-         setActiveCharIndex(0);
-         currentChunkIndexRef.current = index;
+            setActiveChunkIndex(startIndex);
+            setActiveCharIndex(0);
+            currentChunkIndexRef.current = startIndex;
          speechRef.current = utterance;
          lastSpeechEventAtRef.current = Date.now();
     };
 
     utterance.onboundary = (event) => {
             lastSpeechEventAtRef.current = Date.now();
-            if (event.name === 'word') setActiveCharIndex(event.charIndex);
+            if (event.name !== 'word') return;
+
+            const charIndex = event.charIndex;
+            if (!Number.isFinite(charIndex)) return;
+
+            // Map word boundary back to the correct original chunk inside the merged batch.
+            let resolvedChunkIndex = startIndex;
+            let resolvedCharIndex = charIndex;
+
+            for (let i = 0; i < batch.indices.length; i++) {
+                const idx = batch.indices[i];
+                const start = batch.offsets[i];
+                const partLen = chunks[idx]?.length ?? 0;
+                const end = start + partLen;
+                const nextStart = i + 1 < batch.offsets.length ? batch.offsets[i + 1] : Infinity;
+
+                if (charIndex >= start && charIndex < end) {
+                    resolvedChunkIndex = idx;
+                    resolvedCharIndex = charIndex - start;
+                    break;
+                }
+
+                // If we're in the separator region, move highlight to next chunk.
+                if (charIndex >= end && charIndex < nextStart) {
+                    resolvedChunkIndex = Math.min(idx + 1, chunks.length - 1);
+                    resolvedCharIndex = 0;
+                    break;
+                }
+            }
+
+            setActiveChunkIndex(resolvedChunkIndex);
+            setActiveCharIndex(resolvedCharIndex);
     };
 
     utterance.onend = () => {
          if (!activeUtterancesRef.current.has(utterance)) return;
          activeUtterancesRef.current.delete(utterance);
          setActiveCharIndex(null);
-         
-            // Keep a small buffer ahead; too many queued items can be dropped by some browsers.
-            scheduleNext(index + QUEUE_AHEAD);
 
-         if (index === chunks.length - 1) {
+                // Advance pointer to the next batch start.
+                const step = clampMergeCount(ttsMergeCount);
+                const nextStart = startIndex + step;
+                currentChunkIndexRef.current = nextStart;
+
+                // Keep a small buffer ahead; too many queued items can be dropped by some browsers.
+                scheduleNext(nextStart + (QUEUE_BATCHES - 1) * step);
+
+            if (nextStart >= chunks.length) {
             if (autoModeRef.current && nextChapterUrl) {
                 // Wait a bit before loading next chapter to let user hear end
                 setTimeout(() => loadChapter(nextChapterUrl, true), 500);
@@ -987,13 +1059,14 @@ export default function StoryFetcher() {
          if (e.error !== 'interrupted' && e.error !== 'canceled') {
              console.error('Speech error', e);
              // Skip error?
-             scheduleNext(index + 1);
+             const step = clampMergeCount(ttsMergeCount);
+             scheduleNext(startIndex + step);
          }
     };
 
     activeUtterancesRef.current.add(utterance);
     return utterance;
-  }, [chunks, speechRate, selectedVoice, nextChapterUrl, loadChapter]); // Removed dependencies that might cause recreating too often if strictly not needed, but here they are needed.
+    }, [chunks, buildTtsBatch, speechRate, selectedVoice, nextChapterUrl, loadChapter, ttsMergeCount, clampMergeCount]);
 
   const scheduleNext = useCallback((index: number) => {
       const u = prepareUtterance(index);
@@ -1008,24 +1081,15 @@ export default function StoryFetcher() {
      activeUtterancesRef.current.clear();
      
      const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
+     const step = clampMergeCount(ttsMergeCount);
+     const QUEUE_BATCHES = 3;
      
-      // Queue 5 chunks ahead for smoother playback
-      const u1 = prepareUtterance(startIdx);
-      if (u1) window.speechSynthesis.speak(u1);
-
-      const u2 = prepareUtterance(startIdx + 1);
-      if (u2) window.speechSynthesis.speak(u2);
-
-      const u3 = prepareUtterance(startIdx + 2);
-      if (u3) window.speechSynthesis.speak(u3);
-      
-      const u4 = prepareUtterance(startIdx + 3);
-      if (u4) window.speechSynthesis.speak(u4);
-      
-      const u5 = prepareUtterance(startIdx + 4);
-      if (u5) window.speechSynthesis.speak(u5);
+      for (let i = 0; i < QUEUE_BATCHES; i++) {
+          const u = prepareUtterance(startIdx + i * step);
+          if (u) window.speechSynthesis.speak(u);
+      }
      
-  }, [prepareUtterance, chunks]);
+  }, [prepareUtterance, chunks.length, ttsMergeCount, clampMergeCount]);
 
   // Watchdog: Aggressive recovery when browser TTS gets stuck (ONLY for browser TTS, NOT Edge)
   useEffect(() => {
@@ -1092,7 +1156,7 @@ export default function StoryFetcher() {
       }, 1000); // Check every 1s (more aggressive)
       
       return () => clearInterval(intervalId);
-  }, [isSpeaking, isPaused, ttsEngine, speakNextChunk, chunks.length]);
+    }, [isSpeaking, isPaused, ttsEngine, speakNextChunk, chunks.length]);
 
   // Edge TTS Watchdog: Detect stuck audio playback
   useEffect(() => {
@@ -1149,7 +1213,7 @@ export default function StoryFetcher() {
       }, 1000); // Check every 1s
       
       return () => clearInterval(intervalId);
-  }, [isSpeaking, isPaused, ttsEngine, playEdgeChunk]);
+    }, [isSpeaking, isPaused, ttsEngine, playEdgeChunk]);
 
   const toggleSpeech = useCallback(() => {
     if (!chunks.length) return;
@@ -1216,18 +1280,33 @@ export default function StoryFetcher() {
     }
   }, [chunks, isSpeaking, isPaused, speakNextChunk, voices, ttsEngine, playEdgeChunk]);
 
-  const jumpToChunk = useCallback((index: number) => { 
-    window.speechSynthesis.cancel(); 
-    activeUtterancesRef.current.clear();
+    const jumpToChunk = useCallback((index: number) => { 
+        // Stop both engines cleanly
+        window.speechSynthesis.cancel();
+        activeUtterancesRef.current.clear();
+        playTokenRef.current++;
 
-    currentChunkIndexRef.current = index; 
-    setActiveChunkIndex(index); 
-    setActiveCharIndex(null); 
-    setIsSpeaking(true); setIsPaused(false);
-    
-    // Use timeout to ensure cancel takes effect before queuing
-    setTimeout(() => speakNextChunk(), 50); 
-  }, [speakNextChunk]);
+        const audio = audioRef.current;
+        if (audio) {
+            try { audio.pause(); } catch {}
+            audio.currentTime = 0;
+        }
+
+        currentChunkIndexRef.current = index; 
+        setActiveChunkIndex(index); 
+        setActiveCharIndex(null); 
+        setIsSpeaking(true);
+        setIsPaused(false);
+
+        // Start depending on engine
+        setTimeout(() => {
+            if (ttsEngine === 'edge') {
+                void playEdgeChunk(index);
+            } else {
+                speakNextChunk();
+            }
+        }, 50);
+    }, [speakNextChunk, ttsEngine, playEdgeChunk]);
 
   const handleScroll = useCallback(() => {
       if (isSpeaking || !containerRef.current) return;
@@ -1246,8 +1325,34 @@ export default function StoryFetcher() {
       if (closestIndex !== -1 && closestIndex !== currentChunkIndexRef.current) { currentChunkIndexRef.current = closestIndex; }
   }, [chunks, isSpeaking]);
 
-  const handleRateChange = (e: React.ChangeEvent<HTMLInputElement>) => { const newRate = parseFloat(e.target.value); setSpeechRate(newRate); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); setTimeout(() => speakNextChunk(), 50); }};
-  const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => { const v = voices.find(val => val.name === e.target.value); if (v) { setSelectedVoice(v); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); setTimeout(() => speakNextChunk(), 50); }}};
+  const handleRateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const newRate = parseFloat(e.target.value);
+      setSpeechRate(newRate);
+      if (!(isSpeaking && !isPaused)) return;
+
+      if (ttsEngine === 'edge') {
+          playTokenRef.current++;
+          const audio = audioRef.current;
+          if (audio) {
+              try { audio.pause(); } catch {}
+              audio.currentTime = 0;
+          }
+          setTimeout(() => void playEdgeChunk(currentChunkIndexRef.current), 50);
+          return;
+      }
+
+      window.speechSynthesis.cancel();
+      setTimeout(() => speakNextChunk(), 50);
+  };
+  const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+      const v = voices.find(val => val.name === e.target.value);
+      if (!v) return;
+      setSelectedVoice(v);
+      if (isSpeaking && !isPaused) {
+          window.speechSynthesis.cancel();
+          setTimeout(() => speakNextChunk(), 50);
+      }
+  };
 
 
 
@@ -1986,24 +2091,21 @@ export default function StoryFetcher() {
                               </div>
 
                               <div className="flex items-center gap-3">
-                                  <span className="text-xs font-bold text-slate-500">Độ dài</span>
+                                  <span className="text-xs font-bold text-slate-500">Gộp đoạn</span>
                                   <input
-                                      type="range"
-                                      min="200"
-                                      max="3000"
-                                      step="100"
-                                      value={ttsChunkChars}
+                                      type="number"
+                                      min={1}
+                                      max={12}
+                                      value={ttsMergeCount}
                                       onChange={(e) => {
-                                          const v = parseInt(e.target.value);
-                                          setTtsChunkChars(v);
-                                          localStorage.setItem('reader_tts_chunk_chars', String(v));
+                                          const v = clampMergeCount(parseInt(e.target.value || '1'));
+                                          setTtsMergeCount(v);
+                                          localStorage.setItem('reader_tts_merge_count', String(v));
                                           if (isSpeaking || isPaused) stopSpeech();
-                                          // Re-split immediately for smoother reading next time.
-                                          if (translatedContent) processTranslatedText(translatedContent);
                                       }}
-                                      className="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                                      className="w-24 bg-white text-sm focus:outline-none text-slate-700 p-2 rounded border border-slate-300"
                                   />
-                                  <span className="text-xs font-bold text-slate-700 w-[52px] text-right">{ttsChunkChars}</span>
+                                  <span className="text-xs text-slate-500">đoạn/lần đọc</span>
                               </div>
                               
                               <div className="flex gap-2">
@@ -2013,6 +2115,17 @@ export default function StoryFetcher() {
                                   {(isSpeaking || isPaused) && (
                                       <button 
                                           onClick={() => {
+                                              if (ttsEngine === 'edge') {
+                                                  playTokenRef.current++;
+                                                  const audio = audioRef.current;
+                                                  if (audio) {
+                                                      try { audio.pause(); } catch {}
+                                                      audio.currentTime = 0;
+                                                  }
+                                                  void playEdgeChunk(currentChunkIndexRef.current);
+                                                  return;
+                                              }
+
                                               const synth = window.speechSynthesis;
                                               synth.cancel();
                                               setTimeout(() => speakNextChunk(), 100);
