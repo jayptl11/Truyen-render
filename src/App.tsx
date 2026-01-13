@@ -565,6 +565,33 @@ export default function StoryFetcher() {
       return () => window.removeEventListener('keydown', handleKeyPress);
   }, [zenMode, step]);
 
+  // Handle visibility change for mobile (pause when app goes to background)
+  useEffect(() => {
+      const handleVisibilityChange = () => {
+          if (document.hidden) {
+              // App going to background - mobile browsers often suspend TTS
+              // Don't do anything, let watchdog handle recovery if needed
+              console.log('[Visibility] App hidden, TTS may suspend');
+          } else {
+              // App coming back to foreground
+              console.log('[Visibility] App visible');
+              if (isSpeaking && !isPaused && ttsEngine === 'browser') {
+                  // Try to resume if was speaking
+                  const synth = window.speechSynthesis;
+                  if (synth.paused) {
+                      console.log('[Visibility] Resuming paused TTS');
+                      synth.resume();
+                  }
+                  // Update last event time to prevent immediate watchdog trigger
+                  lastSpeechEventAtRef.current = Date.now();
+              }
+          }
+      };
+      
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+      return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, [isSpeaking, isPaused, ttsEngine]);
+
 
   const changeTheme = (t: 'light' | 'dark' | 'sepia') => {
       setTheme(t);
@@ -997,6 +1024,7 @@ export default function StoryFetcher() {
     const QUEUE_AHEAD = Math.ceil(8 / chunksToMerge); // Điều chỉnh buffer theo số đoạn gộp
 
     utterance.onstart = () => {
+         console.log('[TTS] Started speaking chunk', index);
          setActiveChunkIndex(index);
          setActiveCharIndex(0);
          currentChunkIndexRef.current = index;
@@ -1057,16 +1085,59 @@ export default function StoryFetcher() {
      
      const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
      
+      console.log('[TTS] Starting speech from chunk', startIdx);
+      
       // Queue merged chunks - điều chỉnh số lượng queue theo chunksToMerge
       const queueCount = Math.ceil(8 / chunksToMerge);
+      let queuedCount = 0;
+      
       for (let i = 0; i < queueCount; i++) {
           const idx = startIdx + (i * chunksToMerge);
           if (idx >= chunks.length) break;
           const u = prepareUtterance(idx);
-          if (u) window.speechSynthesis.speak(u);
+          if (u) {
+              window.speechSynthesis.speak(u);
+              queuedCount++;
+          }
       }
+      
+      console.log('[TTS] Queued', queuedCount, 'utterances');
+      
+      // Set a timeout to detect if TTS never starts (mobile issue)
+      const startTimeout = setTimeout(() => {
+          if (lastSpeechEventAtRef.current === 0 || Date.now() - lastSpeechEventAtRef.current > 3000) {
+              console.warn('[TTS] Speech failed to start, retrying...');
+              // Try wake up and restart
+              wakeUpSpeechEngine();
+              setTimeout(() => {
+                  window.speechSynthesis.cancel();
+                  activeUtterancesRef.current.clear();
+                  // Retry with fresh utterances
+                  for (let i = 0; i < queueCount; i++) {
+                      const idx = startIdx + (i * chunksToMerge);
+                      if (idx >= chunks.length) break;
+                      const u = prepareUtterance(idx);
+                      if (u) window.speechSynthesis.speak(u);
+                  }
+              }, 500);
+          }
+      }, 3000);
+      
+      // Clear timeout when speaking starts
+      const checkStarted = setInterval(() => {
+          if (lastSpeechEventAtRef.current > 0 && Date.now() - lastSpeechEventAtRef.current < 2000) {
+              clearTimeout(startTimeout);
+              clearInterval(checkStarted);
+          }
+      }, 500);
+      
+      // Cleanup after 5s
+      setTimeout(() => {
+          clearTimeout(startTimeout);
+          clearInterval(checkStarted);
+      }, 5000);
      
-  }, [prepareUtterance, chunks, chunksToMerge]);
+  }, [prepareUtterance, chunks, chunksToMerge, wakeUpSpeechEngine]);
 
   // Watchdog: Aggressive recovery when browser TTS gets stuck (ONLY for browser TTS, NOT Edge)
   useEffect(() => {
@@ -1074,8 +1145,15 @@ export default function StoryFetcher() {
       if (ttsEngine !== 'browser') return;
       if (!isSpeaking || isPaused) return;
       
+      // Detect mobile device
+      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+      
       const synth = window.speechSynthesis;
       let consecutiveStuckChecks = 0;
+      
+      // Mobile devices need longer timeout (10s) because they suspend more aggressively
+      const STUCK_TIMEOUT = isMobile ? 10000 : 5000;
+      const CHECK_INTERVAL = isMobile ? 2000 : 1000; // Check less frequently on mobile
       
       const intervalId = setInterval(() => {
           // Double-check we're still in browser mode
@@ -1094,11 +1172,11 @@ export default function StoryFetcher() {
               const now = Date.now();
               const timeSinceLastEvent = last > 0 ? now - last : 0;
               
-              // Check if stuck: speaking but no events for 5+ seconds
-              const isStuck = synth.speaking && timeSinceLastEvent > 5000;
+              // Check if stuck: speaking but no events for timeout period
+              const isStuck = synth.speaking && timeSinceLastEvent > STUCK_TIMEOUT;
               
-              // Check if queue empty but still have chunks to read
-              const queueEmpty = !synth.speaking && !synth.pending && 
+              // Don't check queueEmpty on mobile - it's unreliable when suspended
+              const queueEmpty = !isMobile && !synth.speaking && !synth.pending && 
                                currentChunkIndexRef.current < chunks.length - 1;
               
               if (isStuck || queueEmpty) {
@@ -1106,19 +1184,24 @@ export default function StoryFetcher() {
                   
                   // First attempt: gentle resume
                   if (consecutiveStuckChecks === 1) {
+                      console.log('[TTS Watchdog] Attempting gentle resume');
                       synth.resume();
                       synth.pause();
                       synth.resume();
                       return;
                   }
                   
-                  // Second attempt: restart from current position
+                  // Second attempt: restart from CURRENT position (not 0!)
                   if (consecutiveStuckChecks >= 2) {
-                      console.log('[TTS Recovery] Restarting from chunk', currentChunkIndexRef.current);
+                      const currentChunk = currentChunkIndexRef.current;
+                      console.log('[TTS Recovery] Restarting from chunk', currentChunk);
                       synth.cancel();
                       activeUtterancesRef.current.clear();
+                      
+                      // Keep the current position!
                       setTimeout(() => {
                           if (isSpeaking && !isPaused && ttsEngine === 'browser') {
+                              // Don't reset currentChunkIndexRef - it's already correct!
                               speakNextChunk();
                           }
                       }, 100);
@@ -1130,7 +1213,7 @@ export default function StoryFetcher() {
           } catch (e) {
               console.error('[TTS Watchdog] Error:', e);
           }
-      }, 1000); // Check every 1s (more aggressive)
+      }, CHECK_INTERVAL);
       
       return () => clearInterval(intervalId);
   }, [isSpeaking, isPaused, ttsEngine, speakNextChunk, chunks.length]);
@@ -1236,7 +1319,9 @@ export default function StoryFetcher() {
     }
     
     // Browser TTS mode
-    if (voices.length === 0) wakeUpSpeechEngine();
+    // ALWAYS wake up engine before speaking (critical for mobile)
+    wakeUpSpeechEngine();
+    
     if (isSpeaking && !isPaused) { 
         // Force Pause (actually Cancel + Save State)
         activeUtterancesRef.current.clear();
@@ -1246,16 +1331,36 @@ export default function StoryFetcher() {
     else if (isPaused) { 
         // Resume from current pos
         setIsPaused(false);
-        speakNextChunk();
+        // Wake up again before resume
+        wakeUpSpeechEngine();
+        setTimeout(() => speakNextChunk(), 100);
     } 
     else { 
         // Start fresh or from existing index (if stopped/reset)
         window.speechSynthesis.cancel(); 
         setIsSpeaking(true); setIsPaused(false); 
         currentChunkIndexRef.current = startIdx;
-        speakNextChunk(); 
+        
+        // Ensure voices are loaded before speaking (critical)
+        if (voices.length === 0 || !selectedVoice) {
+            console.log('[TTS] Voices not ready, loading...');
+            loadVoices();
+            // Retry after voices load
+            setTimeout(() => {
+                if (voices.length > 0) {
+                    speakNextChunk();
+                } else {
+                    console.error('[TTS] No voices available');
+                    setVoiceDebugMsg('Không tìm thấy giọng đọc. Vui lòng thử lại.');
+                    setIsSpeaking(false);
+                }
+            }, 500);
+        } else {
+            // Start immediately if voices ready
+            setTimeout(() => speakNextChunk(), 100);
+        }
     }
-  }, [chunks, isSpeaking, isPaused, speakNextChunk, voices, ttsEngine, playEdgeChunk]);
+  }, [chunks, isSpeaking, isPaused, speakNextChunk, voices, ttsEngine, playEdgeChunk, wakeUpSpeechEngine, loadVoices, selectedVoice]);
 
   const jumpToChunk = useCallback((index: number) => { 
     window.speechSynthesis.cancel(); 
