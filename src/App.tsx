@@ -88,6 +88,7 @@ export default function StoryFetcher() {
   const [ttsChunkChars, setTtsChunkChars] = useState(650);
     const [ttsMergeCount, setTtsMergeCount] = useState(3);
     const [ttsMergeCountDraft, setTtsMergeCountDraft] = useState('3');
+    const [ttsMergeAll, setTtsMergeAll] = useState(true);
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
   const [voiceDebugMsg, setVoiceDebugMsg] = useState('');
@@ -191,6 +192,11 @@ export default function StoryFetcher() {
     if (savedChunkChars) {
         const n = parseInt(savedChunkChars);
         if (!Number.isNaN(n)) setTtsChunkChars(Math.min(3000, Math.max(200, n)));
+    }
+
+    const savedMergeAll = localStorage.getItem('reader_tts_merge_all');
+    if (savedMergeAll) {
+        setTtsMergeAll(savedMergeAll === '1' || savedMergeAll === 'true');
     }
 
     const savedRate = localStorage.getItem('reader_speech_rate');
@@ -825,7 +831,7 @@ export default function StoryFetcher() {
   }, []);
 
     const buildTtsBatch = useCallback((startIndex: number) => {
-        const merge = clampMergeCount(ttsMergeCount);
+        const merge = ttsMergeAll ? Math.max(1, chunks.length - startIndex) : clampMergeCount(ttsMergeCount);
         const indices: number[] = [];
         const offsets: number[] = [];
         let text = '';
@@ -843,7 +849,7 @@ export default function StoryFetcher() {
         }
 
         return { text, indices, offsets, merge };
-    }, [chunks, ttsMergeCount, clampMergeCount]);
+    }, [chunks, ttsMergeAll, ttsMergeCount, clampMergeCount]);
 
     // Edge TTS: Get or fetch audio URL for a batch starting at startIndex
     const getEdgeAudio = useCallback(async (startIndex: number): Promise<string> => {
@@ -890,7 +896,7 @@ export default function StoryFetcher() {
       await audio.play();
       
       // Prefetch next chunks (Word-like smooth buffering)
-            const step = clampMergeCount(ttsMergeCount);
+            const step = ttsMergeAll ? Math.max(1, chunks.length - startIndex) : clampMergeCount(ttsMergeCount);
             void getEdgeAudio(startIndex + step).catch(() => {});
             void getEdgeAudio(startIndex + step * 2).catch(() => {});
     } catch (e: any) {
@@ -912,13 +918,13 @@ export default function StoryFetcher() {
         setIsPaused(false);
       }
     }
-    }, [chunks.length, getEdgeAudio, isSpeaking, isPaused, ttsEngine, ttsMergeCount, clampMergeCount]);
+    }, [chunks.length, getEdgeAudio, isSpeaking, isPaused, ttsEngine, ttsMergeCount, ttsMergeAll, clampMergeCount]);
 
     // Edge TTS: Handle audio end -> next batch
   const handleEdgeAudioEnded = useCallback(() => {
     if (ttsEngine !== 'edge' || !isSpeaking || isPaused) return;
     
-        const step = clampMergeCount(ttsMergeCount);
+        const step = ttsMergeAll ? Math.max(1, chunks.length - currentChunkIndexRef.current) : clampMergeCount(ttsMergeCount);
         const next = currentChunkIndexRef.current + step;
     if (next >= chunks.length) {
       // End of chapter
@@ -932,7 +938,7 @@ export default function StoryFetcher() {
     }
     
     void playEdgeChunk(next);
-    }, [ttsEngine, isSpeaking, isPaused, chunks.length, nextChapterUrl, playEdgeChunk, ttsMergeCount, clampMergeCount]);
+    }, [ttsEngine, isSpeaking, isPaused, chunks.length, nextChapterUrl, playEdgeChunk, ttsMergeCount, ttsMergeAll, clampMergeCount]);
 
   const loadChapter = async (targetUrl: string, isAutoNav = false) => {
       stopSpeech();
@@ -1048,7 +1054,7 @@ export default function StoryFetcher() {
          setActiveCharIndex(null);
 
                 // Advance pointer to the next batch start.
-                const step = clampMergeCount(ttsMergeCount);
+                const step = ttsMergeAll ? Math.max(1, chunks.length - startIndex) : clampMergeCount(ttsMergeCount);
                 const nextStart = startIndex + step;
                 currentChunkIndexRef.current = nextStart;
 
@@ -1072,14 +1078,14 @@ export default function StoryFetcher() {
          if (e.error !== 'interrupted' && e.error !== 'canceled') {
              console.error('Speech error', e);
              // Skip error?
-             const step = clampMergeCount(ttsMergeCount);
+             const step = ttsMergeAll ? Math.max(1, chunks.length - startIndex) : clampMergeCount(ttsMergeCount);
              scheduleNext(startIndex + step);
          }
     };
 
     activeUtterancesRef.current.add(utterance);
     return utterance;
-    }, [chunks, buildTtsBatch, speechRate, selectedVoice, nextChapterUrl, loadChapter, ttsMergeCount, clampMergeCount]);
+    }, [chunks, buildTtsBatch, speechRate, selectedVoice, nextChapterUrl, loadChapter, ttsMergeCount, ttsMergeAll, clampMergeCount]);
 
   const scheduleNext = useCallback((index: number) => {
       const u = prepareUtterance(index);
@@ -1094,7 +1100,7 @@ export default function StoryFetcher() {
      activeUtterancesRef.current.clear();
      
      const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
-     const step = clampMergeCount(ttsMergeCount);
+    const step = ttsMergeAll ? Math.max(1, chunks.length - startIdx) : clampMergeCount(ttsMergeCount);
      const QUEUE_BATCHES = 3;
      
       for (let i = 0; i < QUEUE_BATCHES; i++) {
@@ -1102,7 +1108,7 @@ export default function StoryFetcher() {
           if (u) window.speechSynthesis.speak(u);
       }
      
-  }, [prepareUtterance, chunks.length, ttsMergeCount, clampMergeCount]);
+    }, [prepareUtterance, chunks.length, ttsMergeCount, ttsMergeAll, clampMergeCount]);
 
   // Watchdog: Aggressive recovery when browser TTS gets stuck (ONLY for browser TTS, NOT Edge)
   useEffect(() => {
@@ -2106,35 +2112,51 @@ export default function StoryFetcher() {
                               </div>
 
                               <div className="flex items-center gap-3">
-                                  <span className="text-xs font-bold text-slate-500">Gộp đoạn</span>
-                                  <input
-                                      type="number"
-                                      min={1}
-                                      max={100}
-                                      inputMode="numeric"
-                                      value={ttsMergeCountDraft}
-                                      onChange={(e) => {
-                                          const raw = e.target.value;
-                                          // Allow empty string while typing (so user can delete)
-                                          setTtsMergeCountDraft(raw);
-                                      }}
-                                      onKeyDown={(e) => {
-                                          if (e.key === 'Enter') {
-                                              (e.currentTarget as HTMLInputElement).blur();
-                                          }
-                                      }}
-                                      onBlur={() => {
-                                          const raw = ttsMergeCountDraft.trim();
-                                          const parsed = parseInt(raw || '1', 10);
-                                          const v = clampMergeCount(Number.isNaN(parsed) ? 1 : parsed);
-                                          setTtsMergeCount(v);
-                                          setTtsMergeCountDraft(String(v));
-                                          localStorage.setItem('reader_tts_merge_count', String(v));
-                                          if (isSpeaking || isPaused) stopSpeech();
-                                      }}
-                                      className="w-28 bg-white text-sm focus:outline-none text-slate-700 p-2 rounded border border-slate-300"
-                                  />
-                                  <span className="text-xs text-slate-500">đoạn/lần đọc</span>
+                                  <span className="text-xs font-bold text-slate-500">Gộp hết</span>
+                                  <label className="flex items-center gap-2 select-none">
+                                      <input
+                                          type="checkbox"
+                                          checked={ttsMergeAll}
+                                          onChange={(e) => {
+                                              const on = e.target.checked;
+                                              setTtsMergeAll(on);
+                                              localStorage.setItem('reader_tts_merge_all', on ? '1' : '0');
+                                              if (isSpeaking || isPaused) stopSpeech();
+                                          }}
+                                          className="h-4 w-4 accent-indigo-600"
+                                      />
+                                      <span className="text-xs text-slate-600">Đọc cả chương 1 lần</span>
+                                  </label>
+
+                                  {!ttsMergeAll && (
+                                      <input
+                                          type="number"
+                                          min={1}
+                                          max={100}
+                                          inputMode="numeric"
+                                          value={ttsMergeCountDraft}
+                                          onChange={(e) => {
+                                              const raw = e.target.value;
+                                              // Allow empty string while typing (so user can delete)
+                                              setTtsMergeCountDraft(raw);
+                                          }}
+                                          onKeyDown={(e) => {
+                                              if (e.key === 'Enter') {
+                                                  (e.currentTarget as HTMLInputElement).blur();
+                                              }
+                                          }}
+                                          onBlur={() => {
+                                              const raw = ttsMergeCountDraft.trim();
+                                              const parsed = parseInt(raw || '1', 10);
+                                              const v = clampMergeCount(Number.isNaN(parsed) ? 1 : parsed);
+                                              setTtsMergeCount(v);
+                                              setTtsMergeCountDraft(String(v));
+                                              localStorage.setItem('reader_tts_merge_count', String(v));
+                                              if (isSpeaking || isPaused) stopSpeech();
+                                          }}
+                                          className="w-24 bg-white text-sm focus:outline-none text-slate-700 p-2 rounded border border-slate-300"
+                                      />
+                                  )}
                               </div>
                               
                               <div className="flex gap-2">
