@@ -192,6 +192,12 @@ export default function StoryFetcher() {
         const n = parseInt(savedChunkChars);
         if (!Number.isNaN(n)) setTtsChunkChars(Math.min(3000, Math.max(200, n)));
     }
+
+    const savedRate = localStorage.getItem('reader_speech_rate');
+    if (savedRate) {
+        const r = parseFloat(savedRate);
+        if (!Number.isNaN(r)) setSpeechRate(Math.min(2.0, Math.max(0.5, r)));
+    }
     const savedMergeCount = localStorage.getItem('reader_tts_merge_count');
     if (savedMergeCount) {
         const n = parseInt(savedMergeCount);
@@ -1333,8 +1339,10 @@ export default function StoryFetcher() {
   }, [chunks, isSpeaking]);
 
   const handleRateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-      const newRate = parseFloat(e.target.value);
+      const newRateRaw = parseFloat(e.target.value);
+      const newRate = Math.min(2.0, Math.max(0.5, newRateRaw));
       setSpeechRate(newRate);
+      localStorage.setItem('reader_speech_rate', String(newRate));
       if (!(isSpeaking && !isPaused)) return;
 
       if (ttsEngine === 'edge') {
