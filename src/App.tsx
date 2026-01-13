@@ -1129,6 +1129,17 @@ export default function StoryFetcher() {
      
       console.log('[TTS] Starting speech from chunk', startIdx);
       
+      // CRITICAL: Reset event timestamp để timeout check hoạt động đúng
+      lastSpeechEventAtRef.current = 0;
+      
+      // Check if voices are ready
+      if (voices.length === 0 || !selectedVoice) {
+          console.error('[TTS] No voices available yet');
+          setVoiceDebugMsg('⚠️ Giọng đọc chưa sẵn sàng. Thử lại...');
+          loadVoices();
+          return;
+      }
+      
       // Mobile cần queue ít hơn để tránh memory issues
       const isMobile = /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent);
       const baseQueue = isMobile ? 4 : 8;
@@ -1147,25 +1158,61 @@ export default function StoryFetcher() {
           }
       }
       
-      console.log('[TTS] Queued', queuedCount, 'utterances');
+      console.log('[TTS] Queued', queuedCount, 'utterances, voice:', selectedVoice?.name);
+      
+      if (queuedCount === 0) {
+          console.error('[TTS] Failed to queue any utterances');
+          setVoiceDebugMsg('❌ Không thể tạo audio. Thử tải lại trang.');
+          return;
+      }
       
       // Set a timeout to detect if TTS never starts (mobile issue)
-      const startTimeout = setTimeout(() => {
-          if (lastSpeechEventAtRef.current === 0 || Date.now() - lastSpeechEventAtRef.current > 3000) {
-              console.warn('[TTS] Speech failed to start, retrying...');
-              // Try wake up and restart
-              wakeUpSpeechEngine();
-              setTimeout(() => {
-                  window.speechSynthesis.cancel();
-                  activeUtterancesRef.current.clear();
-                  // Retry with fresh utterances
-                  for (let i = 0; i < queueCount; i++) {
-                      const idx = startIdx + (i * chunksToMerge);
-                      if (idx >= chunks.length) break;
-                      const u = prepareUtterance(idx);
-                      if (u) window.speechSynthesis.speak(u);
+      let retryCount = 0;
+      const MAX_RETRIES = 2;
+      
+      const attemptRetry = () => {
+          if (retryCount >= MAX_RETRIES) {
+              console.error('[TTS] Failed after', MAX_RETRIES, 'retries');
+              setVoiceDebugMsg('❌ TTS không phản hồi. Thử: 1) Tải lại trang 2) Bật/tắt màn hình 3) Chuyển giọng khác');
+              setIsSpeaking(false);
+              return;
+          }
+          
+          retryCount++;
+          console.warn('[TTS] Speech failed to start, retrying... (attempt', retryCount + '/' + MAX_RETRIES + ')');
+          
+          // More aggressive wake up
+          wakeUpSpeechEngine();
+          setTimeout(() => wakeUpSpeechEngine(), 100);
+          
+          setTimeout(() => {
+              window.speechSynthesis.cancel();
+              activeUtterancesRef.current.clear();
+              lastSpeechEventAtRef.current = 0;
+              
+              // Retry with fresh utterances
+              for (let i = 0; i < queueCount; i++) {
+                  const idx = startIdx + (i * chunksToMerge);
+                  if (idx >= chunks.length) break;
+                  const u = prepareUtterance(idx);
+                  if (u) window.speechSynthesis.speak(u);
+              }
+              
+              // Set another timeout for this retry
+              startTimeout = setTimeout(() => {
+                  if (lastSpeechEventAtRef.current === 0 || Date.now() - lastSpeechEventAtRef.current > 3000) {
+                      attemptRetry();
                   }
-              }, 500);
+              }, 3000);
+          }, 300);
+      };
+      
+      let startTimeout = setTimeout(() => {
+          const now = Date.now();
+          const timeSinceStart = lastSpeechEventAtRef.current > 0 ? now - lastSpeechEventAtRef.current : 999999;
+          
+          if (lastSpeechEventAtRef.current === 0 || timeSinceStart > 3000) {
+              attemptRetry();
           }
       }, 3000);
       
@@ -1174,10 +1221,12 @@ export default function StoryFetcher() {
           if (lastSpeechEventAtRef.current > 0 && Date.now() - lastSpeechEventAtRef.current < 2000) {
               clearTimeout(startTimeout);
               clearInterval(checkStarted);
+              console.log('[TTS] Successfully started!');
+              setVoiceDebugMsg(''); // Clear error message
           }
       }, 500);
       
-      // Cleanup after 5s
+      // Cleanup after 10s
       setTimeout(() => {
           clearTimeout(startTimeout);
           clearInterval(checkStarted);
