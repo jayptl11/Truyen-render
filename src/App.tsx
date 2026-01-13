@@ -87,6 +87,7 @@ export default function StoryFetcher() {
   const [speechRate, setSpeechRate] = useState(1.0);
   const [ttsChunkChars, setTtsChunkChars] = useState(650);
     const [ttsMergeCount, setTtsMergeCount] = useState(3);
+    const [ttsMergeCountDraft, setTtsMergeCountDraft] = useState('3');
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
   const [voiceDebugMsg, setVoiceDebugMsg] = useState('');
@@ -194,7 +195,13 @@ export default function StoryFetcher() {
     const savedMergeCount = localStorage.getItem('reader_tts_merge_count');
     if (savedMergeCount) {
         const n = parseInt(savedMergeCount);
-        if (!Number.isNaN(n)) setTtsMergeCount(Math.min(100, Math.max(1, n)));
+        if (!Number.isNaN(n)) {
+            const v = Math.min(100, Math.max(1, n));
+            setTtsMergeCount(v);
+            setTtsMergeCountDraft(String(v));
+        }
+    } else {
+        setTtsMergeCountDraft(String(ttsMergeCount));
     }
     const savedHistory = localStorage.getItem('reader_history');
     if (savedHistory) {
@@ -2096,10 +2103,24 @@ export default function StoryFetcher() {
                                       type="number"
                                       min={1}
                                       max={100}
-                                      value={ttsMergeCount}
+                                      inputMode="numeric"
+                                      value={ttsMergeCountDraft}
                                       onChange={(e) => {
-                                          const v = clampMergeCount(parseInt(e.target.value || '1'));
+                                          const raw = e.target.value;
+                                          // Allow empty string while typing (so user can delete)
+                                          setTtsMergeCountDraft(raw);
+                                      }}
+                                      onKeyDown={(e) => {
+                                          if (e.key === 'Enter') {
+                                              (e.currentTarget as HTMLInputElement).blur();
+                                          }
+                                      }}
+                                      onBlur={() => {
+                                          const raw = ttsMergeCountDraft.trim();
+                                          const parsed = parseInt(raw || '1', 10);
+                                          const v = clampMergeCount(Number.isNaN(parsed) ? 1 : parsed);
                                           setTtsMergeCount(v);
+                                          setTtsMergeCountDraft(String(v));
                                           localStorage.setItem('reader_tts_merge_count', String(v));
                                           if (isSpeaking || isPaused) stopSpeech();
                                       }}
