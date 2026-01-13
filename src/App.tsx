@@ -86,7 +86,6 @@ export default function StoryFetcher() {
   const [isPaused, setIsPaused] = useState(false);
   const [speechRate, setSpeechRate] = useState(1.0);
   const [ttsChunkChars, setTtsChunkChars] = useState(650);
-  const [chunksToMerge, setChunksToMerge] = useState(3); // Số đoạn gộp lại đọc 1 lần
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
   const [voiceDebugMsg, setVoiceDebugMsg] = useState('');
@@ -191,35 +190,6 @@ export default function StoryFetcher() {
         const n = parseInt(savedChunkChars);
         if (!Number.isNaN(n)) setTtsChunkChars(Math.min(3000, Math.max(200, n)));
     }
-    const savedChunksToMerge = localStorage.getItem('reader_chunks_to_merge');
-    if (savedChunksToMerge) {
-        const n = parseInt(savedChunksToMerge);
-        if (!Number.isNaN(n)) setChunksToMerge(Math.min(10, Math.max(1, n)));
-    } else {
-        // Auto-detect mobile và set default thấp hơn
-        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-        if (isMobile) {
-            console.log('[Init] Mobile detected, setting chunksToMerge to 2');
-            setChunksToMerge(2); // Mobile default thấp hơn
-            localStorage.setItem('reader_chunks_to_merge', '2');
-        }
-    }
-    
-    // Load TTS settings
-    const savedSpeechRate = localStorage.getItem('reader_speech_rate');
-    if (savedSpeechRate) {
-        const rate = parseFloat(savedSpeechRate);
-        if (!Number.isNaN(rate)) setSpeechRate(Math.min(2.0, Math.max(0.5, rate)));
-    }
-    const savedTtsEngine = localStorage.getItem('reader_tts_engine') as 'browser' | 'edge';
-    if (savedTtsEngine && (savedTtsEngine === 'browser' || savedTtsEngine === 'edge')) {
-        setTtsEngine(savedTtsEngine);
-    }
-    const savedEdgeVoice = localStorage.getItem('reader_edge_voice');
-    if (savedEdgeVoice) {
-        setEdgeVoice(savedEdgeVoice);
-    }
-    
     const savedHistory = localStorage.getItem('reader_history');
     if (savedHistory) {
         try { setHistory(JSON.parse(savedHistory)); } catch {}
@@ -573,33 +543,6 @@ export default function StoryFetcher() {
       return () => window.removeEventListener('keydown', handleKeyPress);
   }, [zenMode, step]);
 
-  // Handle visibility change for mobile (pause when app goes to background)
-  useEffect(() => {
-      const handleVisibilityChange = () => {
-          if (document.hidden) {
-              // App going to background - mobile browsers often suspend TTS
-              // Don't do anything, let watchdog handle recovery if needed
-              console.log('[Visibility] App hidden, TTS may suspend');
-          } else {
-              // App coming back to foreground
-              console.log('[Visibility] App visible');
-              if (isSpeaking && !isPaused && ttsEngine === 'browser') {
-                  // Try to resume if was speaking
-                  const synth = window.speechSynthesis;
-                  if (synth.paused) {
-                      console.log('[Visibility] Resuming paused TTS');
-                      synth.resume();
-                  }
-                  // Update last event time to prevent immediate watchdog trigger
-                  lastSpeechEventAtRef.current = Date.now();
-              }
-          }
-      };
-      
-      document.addEventListener('visibilitychange', handleVisibilityChange);
-      return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [isSpeaking, isPaused, ttsEngine]);
-
 
   const changeTheme = (t: 'light' | 'dark' | 'sepia') => {
       setTheme(t);
@@ -629,29 +572,18 @@ export default function StoryFetcher() {
     
     setVoiceDebugMsg(`Tìm thấy ${availableVoices.length} giọng (${vnVoices.length} tiếng Việt).`);
 
-    // Try to load saved voice first
-    const savedVoiceName = localStorage.getItem('reader_selected_voice');
-    let voiceToSet = null;
+    const hoaiMyVoice = vnVoices.find(v => v.name.includes('HoaiMy') || v.name.includes('Hoai My'));
+    const msFemale = vnVoices.find(v => v.name.includes('Microsoft') && (v.name.includes('Female') || v.name.includes('Nữ')));
+    const defaultVoice = hoaiMyVoice 
+                      || msFemale 
+                      || vnVoices.find(v => v.name.includes('Microsoft')) 
+                      || vnVoices.find(v => v.name.includes('Google')) 
+                      || vnVoices[0];
     
-    if (savedVoiceName) {
-        voiceToSet = availableVoices.find(v => v.name === savedVoiceName);
-    }
-    
-    // If no saved voice or not found, use default
-    if (!voiceToSet) {
-        const hoaiMyVoice = vnVoices.find(v => v.name.includes('HoaiMy') || v.name.includes('Hoai My'));
-        const msFemale = vnVoices.find(v => v.name.includes('Microsoft') && (v.name.includes('Female') || v.name.includes('Nữ')));
-        voiceToSet = hoaiMyVoice 
-                          || msFemale 
-                          || vnVoices.find(v => v.name.includes('Microsoft')) 
-                          || vnVoices.find(v => v.name.includes('Google')) 
-                          || vnVoices[0];
-    }
-    
-    if (!selectedVoice && voiceToSet) {
-        setSelectedVoice(voiceToSet);
+    if (!selectedVoice && defaultVoice) {
+        setSelectedVoice(defaultVoice);
     } else if (selectedVoice && !availableVoices.find(v => v.name === selectedVoice.name)) {
-        if (voiceToSet) setSelectedVoice(voiceToSet);
+        if (defaultVoice) setSelectedVoice(defaultVoice);
     }
   }, [selectedVoice]);
 
@@ -910,19 +842,11 @@ export default function StoryFetcher() {
       if (playTokenRef.current !== token) return; // Cancelled
       
       audio.src = url;
-      
-      // Preload next chunks BEFORE playing to reduce gap
-      const prefetchPromises = [
-          getEdgeAudio(index + 1).catch(() => {}),
-          getEdgeAudio(index + 2).catch(() => {}),
-          getEdgeAudio(index + 3).catch(() => {}),
-          getEdgeAudio(index + 4).catch(() => {})
-      ];
-      
       await audio.play();
       
-      // Continue prefetching in background
-      void Promise.all(prefetchPromises);
+      // Prefetch next chunks (Word-like smooth buffering)
+      void getEdgeAudio(index + 1).catch(() => {});
+      void getEdgeAudio(index + 2).catch(() => {});
     } catch (e: any) {
       console.error(`Edge TTS error (attempt ${retryCount + 1}/3):`, e);
       
@@ -1015,48 +939,17 @@ export default function StoryFetcher() {
   const prepareUtterance = useCallback((index: number) => {
     if (index >= chunks.length || index < 0) return null;
 
-    // Detect mobile
-    const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    
-    // Mobile browser có giới hạn độ dài text cho TTS (~5000 chars an toàn)
-    // Nếu gộp quá nhiều sẽ fail im lặng
-    const MAX_TEXT_LENGTH = isMobile ? 5000 : 15000;
-    
-    // Gộp nhiều chunks lại nhưng giới hạn độ dài
-    const mergedChunks: string[] = [];
-    let totalLength = 0;
-    
-    for (let i = 0; i < chunksToMerge && index + i < chunks.length; i++) {
-        const nextChunk = chunks[index + i];
-        if (totalLength + nextChunk.length > MAX_TEXT_LENGTH) {
-            // Đã đủ dài, dừng gộp
-            if (mergedChunks.length === 0) {
-                // Ít nhất phải có 1 chunk
-                mergedChunks.push(nextChunk.substring(0, MAX_TEXT_LENGTH));
-            }
-            break;
-        }
-        mergedChunks.push(nextChunk);
-        totalLength += nextChunk.length;
-    }
-    
-    const chunkText = mergedChunks.join(' ');
-    
-    if (chunkText.length > MAX_TEXT_LENGTH) {
-        console.warn('[TTS] Text too long:', chunkText.length, 'chars, truncating to', MAX_TEXT_LENGTH);
-    }
-    
-    const utterance = new SpeechSynthesisUtterance(chunkText.substring(0, MAX_TEXT_LENGTH));
+    const chunkText = chunks[index];
+    const utterance = new SpeechSynthesisUtterance(chunkText);
     utterance.rate = speechRate;
     utterance.pitch = 1.0;
     utterance.volume = 1.0;
     utterance.lang = selectedVoice?.lang || 'vi-VN';
     if (selectedVoice) utterance.voice = selectedVoice;
 
-    const QUEUE_AHEAD = Math.ceil(8 / chunksToMerge); // Điều chỉnh buffer theo số đoạn gộp
+    const QUEUE_AHEAD = 5; // Tăng buffer để mượt hơn (giống Word)
 
     utterance.onstart = () => {
-         console.log('[TTS] Started speaking chunk', index);
          setActiveChunkIndex(index);
          setActiveCharIndex(0);
          currentChunkIndexRef.current = index;
@@ -1074,11 +967,10 @@ export default function StoryFetcher() {
          activeUtterancesRef.current.delete(utterance);
          setActiveCharIndex(null);
          
-            // Nhảy đến chunk tiếp theo sau khi đọc xong nhóm
-            const nextIndex = index + chunksToMerge;
-            scheduleNext(nextIndex + QUEUE_AHEAD);
+            // Keep a small buffer ahead; too many queued items can be dropped by some browsers.
+            scheduleNext(index + QUEUE_AHEAD);
 
-         if (nextIndex >= chunks.length) {
+         if (index === chunks.length - 1) {
             if (autoModeRef.current && nextChapterUrl) {
                 // Wait a bit before loading next chapter to let user hear end
                 setTimeout(() => loadChapter(nextChapterUrl, true), 500);
@@ -1093,25 +985,15 @@ export default function StoryFetcher() {
          if (!activeUtterancesRef.current.has(utterance)) return;
          activeUtterancesRef.current.delete(utterance);
          if (e.error !== 'interrupted' && e.error !== 'canceled') {
-             console.error('[TTS] Speech error:', e.error, 'at chunk', index);
-             
-             // Nếu text-too-long error trên mobile, tự động giảm chunksToMerge
-             const isMobile = /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent);
-             if (isMobile && e.error === 'text-too-long' && chunksToMerge > 1) {
-                 const newMerge = Math.max(1, chunksToMerge - 1);
-                 console.warn('[TTS] Text too long on mobile, reducing merge to', newMerge);
-                 setChunksToMerge(newMerge);
-                 localStorage.setItem('reader_chunks_to_merge', String(newMerge));
-             }
-             
-             // Skip to next merged group
-             scheduleNext(index + chunksToMerge);
+             console.error('Speech error', e);
+             // Skip error?
+             scheduleNext(index + 1);
          }
     };
 
     activeUtterancesRef.current.add(utterance);
     return utterance;
-  }, [chunks, speechRate, selectedVoice, nextChapterUrl, loadChapter, chunksToMerge]); // Removed dependencies that might cause recreating too often if strictly not needed, but here they are needed.
+  }, [chunks, speechRate, selectedVoice, nextChapterUrl, loadChapter]); // Removed dependencies that might cause recreating too often if strictly not needed, but here they are needed.
 
   const scheduleNext = useCallback((index: number) => {
       const u = prepareUtterance(index);
@@ -1121,118 +1003,29 @@ export default function StoryFetcher() {
   }, [prepareUtterance]);
 
   const speakNextChunk = useCallback(() => {
-     // Smart buffering: queue multiple merged chunks ahead to reduce gaps
+     // Smart buffering: queue multiple chunks ahead to reduce gaps (Word-like)
      window.speechSynthesis.cancel();
      activeUtterancesRef.current.clear();
      
      const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
      
-      console.log('[TTS] Starting speech from chunk', startIdx);
+      // Queue 5 chunks ahead for smoother playback
+      const u1 = prepareUtterance(startIdx);
+      if (u1) window.speechSynthesis.speak(u1);
+
+      const u2 = prepareUtterance(startIdx + 1);
+      if (u2) window.speechSynthesis.speak(u2);
+
+      const u3 = prepareUtterance(startIdx + 2);
+      if (u3) window.speechSynthesis.speak(u3);
       
-      // CRITICAL: Reset event timestamp để timeout check hoạt động đúng
-      lastSpeechEventAtRef.current = 0;
+      const u4 = prepareUtterance(startIdx + 3);
+      if (u4) window.speechSynthesis.speak(u4);
       
-      // Check if voices are ready
-      if (voices.length === 0 || !selectedVoice) {
-          console.error('[TTS] No voices available yet');
-          setVoiceDebugMsg('⚠️ Giọng đọc chưa sẵn sàng. Thử lại...');
-          loadVoices();
-          return;
-      }
-      
-      // Mobile cần queue ít hơn để tránh memory issues
-      const isMobile = /Android|webOS|iPhone|iPad|iPod/i.test(navigator.userAgent);
-      const baseQueue = isMobile ? 4 : 8;
-      
-      // Queue merged chunks - điều chỉnh số lượng queue theo chunksToMerge
-      const queueCount = Math.ceil(baseQueue / chunksToMerge);
-      let queuedCount = 0;
-      
-      for (let i = 0; i < queueCount; i++) {
-          const idx = startIdx + (i * chunksToMerge);
-          if (idx >= chunks.length) break;
-          const u = prepareUtterance(idx);
-          if (u) {
-              window.speechSynthesis.speak(u);
-              queuedCount++;
-          }
-      }
-      
-      console.log('[TTS] Queued', queuedCount, 'utterances, voice:', selectedVoice?.name);
-      
-      if (queuedCount === 0) {
-          console.error('[TTS] Failed to queue any utterances');
-          setVoiceDebugMsg('❌ Không thể tạo audio. Thử tải lại trang.');
-          return;
-      }
-      
-      // Set a timeout to detect if TTS never starts (mobile issue)
-      let retryCount = 0;
-      const MAX_RETRIES = 2;
-      
-      const attemptRetry = () => {
-          if (retryCount >= MAX_RETRIES) {
-              console.error('[TTS] Failed after', MAX_RETRIES, 'retries');
-              setVoiceDebugMsg('❌ TTS không phản hồi. Thử: 1) Tải lại trang 2) Bật/tắt màn hình 3) Chuyển giọng khác');
-              setIsSpeaking(false);
-              return;
-          }
-          
-          retryCount++;
-          console.warn('[TTS] Speech failed to start, retrying... (attempt', retryCount + '/' + MAX_RETRIES + ')');
-          
-          // More aggressive wake up
-          wakeUpSpeechEngine();
-          setTimeout(() => wakeUpSpeechEngine(), 100);
-          
-          setTimeout(() => {
-              window.speechSynthesis.cancel();
-              activeUtterancesRef.current.clear();
-              lastSpeechEventAtRef.current = 0;
-              
-              // Retry with fresh utterances
-              for (let i = 0; i < queueCount; i++) {
-                  const idx = startIdx + (i * chunksToMerge);
-                  if (idx >= chunks.length) break;
-                  const u = prepareUtterance(idx);
-                  if (u) window.speechSynthesis.speak(u);
-              }
-              
-              // Set another timeout for this retry
-              startTimeout = setTimeout(() => {
-                  if (lastSpeechEventAtRef.current === 0 || Date.now() - lastSpeechEventAtRef.current > 3000) {
-                      attemptRetry();
-                  }
-              }, 3000);
-          }, 300);
-      };
-      
-      let startTimeout = setTimeout(() => {
-          const now = Date.now();
-          const timeSinceStart = lastSpeechEventAtRef.current > 0 ? now - lastSpeechEventAtRef.current : 999999;
-          
-          if (lastSpeechEventAtRef.current === 0 || timeSinceStart > 3000) {
-              attemptRetry();
-          }
-      }, 3000);
-      
-      // Clear timeout when speaking starts
-      const checkStarted = setInterval(() => {
-          if (lastSpeechEventAtRef.current > 0 && Date.now() - lastSpeechEventAtRef.current < 2000) {
-              clearTimeout(startTimeout);
-              clearInterval(checkStarted);
-              console.log('[TTS] Successfully started!');
-              setVoiceDebugMsg(''); // Clear error message
-          }
-      }, 500);
-      
-      // Cleanup after 10s
-      setTimeout(() => {
-          clearTimeout(startTimeout);
-          clearInterval(checkStarted);
-      }, 5000);
+      const u5 = prepareUtterance(startIdx + 4);
+      if (u5) window.speechSynthesis.speak(u5);
      
-  }, [prepareUtterance, chunks, chunksToMerge, wakeUpSpeechEngine]);
+  }, [prepareUtterance, chunks]);
 
   // Watchdog: Aggressive recovery when browser TTS gets stuck (ONLY for browser TTS, NOT Edge)
   useEffect(() => {
@@ -1240,15 +1033,8 @@ export default function StoryFetcher() {
       if (ttsEngine !== 'browser') return;
       if (!isSpeaking || isPaused) return;
       
-      // Detect mobile device
-      const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-      
       const synth = window.speechSynthesis;
       let consecutiveStuckChecks = 0;
-      
-      // Mobile devices need longer timeout (10s) because they suspend more aggressively
-      const STUCK_TIMEOUT = isMobile ? 10000 : 5000;
-      const CHECK_INTERVAL = isMobile ? 2000 : 1000; // Check less frequently on mobile
       
       const intervalId = setInterval(() => {
           // Double-check we're still in browser mode
@@ -1267,11 +1053,11 @@ export default function StoryFetcher() {
               const now = Date.now();
               const timeSinceLastEvent = last > 0 ? now - last : 0;
               
-              // Check if stuck: speaking but no events for timeout period
-              const isStuck = synth.speaking && timeSinceLastEvent > STUCK_TIMEOUT;
+              // Check if stuck: speaking but no events for 5+ seconds
+              const isStuck = synth.speaking && timeSinceLastEvent > 5000;
               
-              // Don't check queueEmpty on mobile - it's unreliable when suspended
-              const queueEmpty = !isMobile && !synth.speaking && !synth.pending && 
+              // Check if queue empty but still have chunks to read
+              const queueEmpty = !synth.speaking && !synth.pending && 
                                currentChunkIndexRef.current < chunks.length - 1;
               
               if (isStuck || queueEmpty) {
@@ -1279,24 +1065,19 @@ export default function StoryFetcher() {
                   
                   // First attempt: gentle resume
                   if (consecutiveStuckChecks === 1) {
-                      console.log('[TTS Watchdog] Attempting gentle resume');
                       synth.resume();
                       synth.pause();
                       synth.resume();
                       return;
                   }
                   
-                  // Second attempt: restart from CURRENT position (not 0!)
+                  // Second attempt: restart from current position
                   if (consecutiveStuckChecks >= 2) {
-                      const currentChunk = currentChunkIndexRef.current;
-                      console.log('[TTS Recovery] Restarting from chunk', currentChunk);
+                      console.log('[TTS Recovery] Restarting from chunk', currentChunkIndexRef.current);
                       synth.cancel();
                       activeUtterancesRef.current.clear();
-                      
-                      // Keep the current position!
                       setTimeout(() => {
                           if (isSpeaking && !isPaused && ttsEngine === 'browser') {
-                              // Don't reset currentChunkIndexRef - it's already correct!
                               speakNextChunk();
                           }
                       }, 100);
@@ -1308,7 +1089,7 @@ export default function StoryFetcher() {
           } catch (e) {
               console.error('[TTS Watchdog] Error:', e);
           }
-      }, CHECK_INTERVAL);
+      }, 1000); // Check every 1s (more aggressive)
       
       return () => clearInterval(intervalId);
   }, [isSpeaking, isPaused, ttsEngine, speakNextChunk, chunks.length]);
@@ -1414,9 +1195,7 @@ export default function StoryFetcher() {
     }
     
     // Browser TTS mode
-    // ALWAYS wake up engine before speaking (critical for mobile)
-    wakeUpSpeechEngine();
-    
+    if (voices.length === 0) wakeUpSpeechEngine();
     if (isSpeaking && !isPaused) { 
         // Force Pause (actually Cancel + Save State)
         activeUtterancesRef.current.clear();
@@ -1426,36 +1205,16 @@ export default function StoryFetcher() {
     else if (isPaused) { 
         // Resume from current pos
         setIsPaused(false);
-        // Wake up again before resume
-        wakeUpSpeechEngine();
-        setTimeout(() => speakNextChunk(), 100);
+        speakNextChunk();
     } 
     else { 
         // Start fresh or from existing index (if stopped/reset)
         window.speechSynthesis.cancel(); 
         setIsSpeaking(true); setIsPaused(false); 
         currentChunkIndexRef.current = startIdx;
-        
-        // Ensure voices are loaded before speaking (critical)
-        if (voices.length === 0 || !selectedVoice) {
-            console.log('[TTS] Voices not ready, loading...');
-            loadVoices();
-            // Retry after voices load
-            setTimeout(() => {
-                if (voices.length > 0) {
-                    speakNextChunk();
-                } else {
-                    console.error('[TTS] No voices available');
-                    setVoiceDebugMsg('Không tìm thấy giọng đọc. Vui lòng thử lại.');
-                    setIsSpeaking(false);
-                }
-            }, 500);
-        } else {
-            // Start immediately if voices ready
-            setTimeout(() => speakNextChunk(), 100);
-        }
+        speakNextChunk(); 
     }
-  }, [chunks, isSpeaking, isPaused, speakNextChunk, voices, ttsEngine, playEdgeChunk, wakeUpSpeechEngine, loadVoices, selectedVoice]);
+  }, [chunks, isSpeaking, isPaused, speakNextChunk, voices, ttsEngine, playEdgeChunk]);
 
   const jumpToChunk = useCallback((index: number) => { 
     window.speechSynthesis.cancel(); 
@@ -1487,27 +1246,8 @@ export default function StoryFetcher() {
       if (closestIndex !== -1 && closestIndex !== currentChunkIndexRef.current) { currentChunkIndexRef.current = closestIndex; }
   }, [chunks, isSpeaking]);
 
-  const handleRateChange = (e: React.ChangeEvent<HTMLInputElement>) => { 
-      const newRate = parseFloat(e.target.value); 
-      setSpeechRate(newRate); 
-      localStorage.setItem('reader_speech_rate', newRate.toString());
-      if (isSpeaking && !isPaused) { 
-          window.speechSynthesis.cancel(); 
-          setTimeout(() => speakNextChunk(), 50); 
-      }
-  };
-  
-  const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => { 
-      const v = voices.find(val => val.name === e.target.value); 
-      if (v) { 
-          setSelectedVoice(v); 
-          localStorage.setItem('reader_selected_voice', v.name);
-          if (isSpeaking && !isPaused) { 
-              window.speechSynthesis.cancel(); 
-              setTimeout(() => speakNextChunk(), 50); 
-          }
-      }
-  };
+  const handleRateChange = (e: React.ChangeEvent<HTMLInputElement>) => { const newRate = parseFloat(e.target.value); setSpeechRate(newRate); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); setTimeout(() => speakNextChunk(), 50); }};
+  const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => { const v = voices.find(val => val.name === e.target.value); if (v) { setSelectedVoice(v); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); setTimeout(() => speakNextChunk(), 50); }}};
 
 
 
@@ -2208,7 +1948,6 @@ export default function StoryFetcher() {
                                           const next = e.target.value as 'browser' | 'edge';
                                           if (isSpeaking || isPaused) stopSpeech();
                                           setTtsEngine(next);
-                                          localStorage.setItem('reader_tts_engine', next);
                                       }}
                                   >
                                       <option value="edge">Edge TTS (mượt như Word - đang bị chặn, dùng browser)</option>
@@ -2224,7 +1963,6 @@ export default function StoryFetcher() {
                                           value={edgeVoice}
                                           onChange={(e) => {
                                               setEdgeVoice(e.target.value);
-                                              localStorage.setItem('reader_edge_voice', e.target.value);
                                               if (ttsEngine === 'edge' && (isSpeaking || isPaused)) stopSpeech();
                                           }}
                                       >
@@ -2248,23 +1986,24 @@ export default function StoryFetcher() {
                               </div>
 
                               <div className="flex items-center gap-3">
-                                  <span className="text-xs font-bold text-slate-500">Gộp đoạn</span>
+                                  <span className="text-xs font-bold text-slate-500">Độ dài</span>
                                   <input
                                       type="range"
-                                      min="1"
-                                      max="10"
-                                      step="1"
-                                      value={chunksToMerge}
+                                      min="200"
+                                      max="3000"
+                                      step="100"
+                                      value={ttsChunkChars}
                                       onChange={(e) => {
                                           const v = parseInt(e.target.value);
-                                          setChunksToMerge(v);
-                                          localStorage.setItem('reader_chunks_to_merge', String(v));
+                                          setTtsChunkChars(v);
+                                          localStorage.setItem('reader_tts_chunk_chars', String(v));
                                           if (isSpeaking || isPaused) stopSpeech();
+                                          // Re-split immediately for smoother reading next time.
+                                          if (translatedContent) processTranslatedText(translatedContent);
                                       }}
                                       className="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
-                                      title="Số đoạn được gộp lại đọc một lần (càng nhiều càng mượt)"
                                   />
-                                  <span className="text-xs font-bold text-slate-700 w-[52px] text-right">{chunksToMerge} đoạn</span>
+                                  <span className="text-xs font-bold text-slate-700 w-[52px] text-right">{ttsChunkChars}</span>
                               </div>
                               
                               <div className="flex gap-2">
