@@ -86,6 +86,7 @@ export default function StoryFetcher() {
   const [isPaused, setIsPaused] = useState(false);
   const [speechRate, setSpeechRate] = useState(1.0);
   const [ttsChunkChars, setTtsChunkChars] = useState(650);
+  const [chunksToMerge, setChunksToMerge] = useState(3); // Số đoạn gộp lại đọc 1 lần
   const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
   const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
   const [voiceDebugMsg, setVoiceDebugMsg] = useState('');
@@ -190,6 +191,27 @@ export default function StoryFetcher() {
         const n = parseInt(savedChunkChars);
         if (!Number.isNaN(n)) setTtsChunkChars(Math.min(3000, Math.max(200, n)));
     }
+    const savedChunksToMerge = localStorage.getItem('reader_chunks_to_merge');
+    if (savedChunksToMerge) {
+        const n = parseInt(savedChunksToMerge);
+        if (!Number.isNaN(n)) setChunksToMerge(Math.min(10, Math.max(1, n)));
+    }
+    
+    // Load TTS settings
+    const savedSpeechRate = localStorage.getItem('reader_speech_rate');
+    if (savedSpeechRate) {
+        const rate = parseFloat(savedSpeechRate);
+        if (!Number.isNaN(rate)) setSpeechRate(Math.min(2.0, Math.max(0.5, rate)));
+    }
+    const savedTtsEngine = localStorage.getItem('reader_tts_engine') as 'browser' | 'edge';
+    if (savedTtsEngine && (savedTtsEngine === 'browser' || savedTtsEngine === 'edge')) {
+        setTtsEngine(savedTtsEngine);
+    }
+    const savedEdgeVoice = localStorage.getItem('reader_edge_voice');
+    if (savedEdgeVoice) {
+        setEdgeVoice(savedEdgeVoice);
+    }
+    
     const savedHistory = localStorage.getItem('reader_history');
     if (savedHistory) {
         try { setHistory(JSON.parse(savedHistory)); } catch {}
@@ -572,18 +594,29 @@ export default function StoryFetcher() {
     
     setVoiceDebugMsg(`Tìm thấy ${availableVoices.length} giọng (${vnVoices.length} tiếng Việt).`);
 
-    const hoaiMyVoice = vnVoices.find(v => v.name.includes('HoaiMy') || v.name.includes('Hoai My'));
-    const msFemale = vnVoices.find(v => v.name.includes('Microsoft') && (v.name.includes('Female') || v.name.includes('Nữ')));
-    const defaultVoice = hoaiMyVoice 
-                      || msFemale 
-                      || vnVoices.find(v => v.name.includes('Microsoft')) 
-                      || vnVoices.find(v => v.name.includes('Google')) 
-                      || vnVoices[0];
+    // Try to load saved voice first
+    const savedVoiceName = localStorage.getItem('reader_selected_voice');
+    let voiceToSet = null;
     
-    if (!selectedVoice && defaultVoice) {
-        setSelectedVoice(defaultVoice);
+    if (savedVoiceName) {
+        voiceToSet = availableVoices.find(v => v.name === savedVoiceName);
+    }
+    
+    // If no saved voice or not found, use default
+    if (!voiceToSet) {
+        const hoaiMyVoice = vnVoices.find(v => v.name.includes('HoaiMy') || v.name.includes('Hoai My'));
+        const msFemale = vnVoices.find(v => v.name.includes('Microsoft') && (v.name.includes('Female') || v.name.includes('Nữ')));
+        voiceToSet = hoaiMyVoice 
+                          || msFemale 
+                          || vnVoices.find(v => v.name.includes('Microsoft')) 
+                          || vnVoices.find(v => v.name.includes('Google')) 
+                          || vnVoices[0];
+    }
+    
+    if (!selectedVoice && voiceToSet) {
+        setSelectedVoice(voiceToSet);
     } else if (selectedVoice && !availableVoices.find(v => v.name === selectedVoice.name)) {
-        if (defaultVoice) setSelectedVoice(defaultVoice);
+        if (voiceToSet) setSelectedVoice(voiceToSet);
     }
   }, [selectedVoice]);
 
@@ -842,11 +875,19 @@ export default function StoryFetcher() {
       if (playTokenRef.current !== token) return; // Cancelled
       
       audio.src = url;
+      
+      // Preload next chunks BEFORE playing to reduce gap
+      const prefetchPromises = [
+          getEdgeAudio(index + 1).catch(() => {}),
+          getEdgeAudio(index + 2).catch(() => {}),
+          getEdgeAudio(index + 3).catch(() => {}),
+          getEdgeAudio(index + 4).catch(() => {})
+      ];
+      
       await audio.play();
       
-      // Prefetch next chunks (Word-like smooth buffering)
-      void getEdgeAudio(index + 1).catch(() => {});
-      void getEdgeAudio(index + 2).catch(() => {});
+      // Continue prefetching in background
+      void Promise.all(prefetchPromises);
     } catch (e: any) {
       console.error(`Edge TTS error (attempt ${retryCount + 1}/3):`, e);
       
@@ -939,7 +980,13 @@ export default function StoryFetcher() {
   const prepareUtterance = useCallback((index: number) => {
     if (index >= chunks.length || index < 0) return null;
 
-    const chunkText = chunks[index];
+    // Gộp nhiều chunks lại để đọc mượt hơn
+    const mergedChunks: string[] = [];
+    for (let i = 0; i < chunksToMerge && index + i < chunks.length; i++) {
+        mergedChunks.push(chunks[index + i]);
+    }
+    const chunkText = mergedChunks.join(' ');
+    
     const utterance = new SpeechSynthesisUtterance(chunkText);
     utterance.rate = speechRate;
     utterance.pitch = 1.0;
@@ -947,7 +994,7 @@ export default function StoryFetcher() {
     utterance.lang = selectedVoice?.lang || 'vi-VN';
     if (selectedVoice) utterance.voice = selectedVoice;
 
-    const QUEUE_AHEAD = 5; // Tăng buffer để mượt hơn (giống Word)
+    const QUEUE_AHEAD = Math.ceil(8 / chunksToMerge); // Điều chỉnh buffer theo số đoạn gộp
 
     utterance.onstart = () => {
          setActiveChunkIndex(index);
@@ -967,10 +1014,11 @@ export default function StoryFetcher() {
          activeUtterancesRef.current.delete(utterance);
          setActiveCharIndex(null);
          
-            // Keep a small buffer ahead; too many queued items can be dropped by some browsers.
-            scheduleNext(index + QUEUE_AHEAD);
+            // Nhảy đến chunk tiếp theo sau khi đọc xong nhóm
+            const nextIndex = index + chunksToMerge;
+            scheduleNext(nextIndex + QUEUE_AHEAD);
 
-         if (index === chunks.length - 1) {
+         if (nextIndex >= chunks.length) {
             if (autoModeRef.current && nextChapterUrl) {
                 // Wait a bit before loading next chapter to let user hear end
                 setTimeout(() => loadChapter(nextChapterUrl, true), 500);
@@ -986,14 +1034,14 @@ export default function StoryFetcher() {
          activeUtterancesRef.current.delete(utterance);
          if (e.error !== 'interrupted' && e.error !== 'canceled') {
              console.error('Speech error', e);
-             // Skip error?
-             scheduleNext(index + 1);
+             // Skip to next merged group
+             scheduleNext(index + chunksToMerge);
          }
     };
 
     activeUtterancesRef.current.add(utterance);
     return utterance;
-  }, [chunks, speechRate, selectedVoice, nextChapterUrl, loadChapter]); // Removed dependencies that might cause recreating too often if strictly not needed, but here they are needed.
+  }, [chunks, speechRate, selectedVoice, nextChapterUrl, loadChapter, chunksToMerge]); // Removed dependencies that might cause recreating too often if strictly not needed, but here they are needed.
 
   const scheduleNext = useCallback((index: number) => {
       const u = prepareUtterance(index);
@@ -1003,29 +1051,22 @@ export default function StoryFetcher() {
   }, [prepareUtterance]);
 
   const speakNextChunk = useCallback(() => {
-     // Smart buffering: queue multiple chunks ahead to reduce gaps (Word-like)
+     // Smart buffering: queue multiple merged chunks ahead to reduce gaps
      window.speechSynthesis.cancel();
      activeUtterancesRef.current.clear();
      
      const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
      
-      // Queue 5 chunks ahead for smoother playback
-      const u1 = prepareUtterance(startIdx);
-      if (u1) window.speechSynthesis.speak(u1);
-
-      const u2 = prepareUtterance(startIdx + 1);
-      if (u2) window.speechSynthesis.speak(u2);
-
-      const u3 = prepareUtterance(startIdx + 2);
-      if (u3) window.speechSynthesis.speak(u3);
-      
-      const u4 = prepareUtterance(startIdx + 3);
-      if (u4) window.speechSynthesis.speak(u4);
-      
-      const u5 = prepareUtterance(startIdx + 4);
-      if (u5) window.speechSynthesis.speak(u5);
+      // Queue merged chunks - điều chỉnh số lượng queue theo chunksToMerge
+      const queueCount = Math.ceil(8 / chunksToMerge);
+      for (let i = 0; i < queueCount; i++) {
+          const idx = startIdx + (i * chunksToMerge);
+          if (idx >= chunks.length) break;
+          const u = prepareUtterance(idx);
+          if (u) window.speechSynthesis.speak(u);
+      }
      
-  }, [prepareUtterance, chunks]);
+  }, [prepareUtterance, chunks, chunksToMerge]);
 
   // Watchdog: Aggressive recovery when browser TTS gets stuck (ONLY for browser TTS, NOT Edge)
   useEffect(() => {
@@ -1246,8 +1287,27 @@ export default function StoryFetcher() {
       if (closestIndex !== -1 && closestIndex !== currentChunkIndexRef.current) { currentChunkIndexRef.current = closestIndex; }
   }, [chunks, isSpeaking]);
 
-  const handleRateChange = (e: React.ChangeEvent<HTMLInputElement>) => { const newRate = parseFloat(e.target.value); setSpeechRate(newRate); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); setTimeout(() => speakNextChunk(), 50); }};
-  const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => { const v = voices.find(val => val.name === e.target.value); if (v) { setSelectedVoice(v); if (isSpeaking && !isPaused) { window.speechSynthesis.cancel(); setTimeout(() => speakNextChunk(), 50); }}};
+  const handleRateChange = (e: React.ChangeEvent<HTMLInputElement>) => { 
+      const newRate = parseFloat(e.target.value); 
+      setSpeechRate(newRate); 
+      localStorage.setItem('reader_speech_rate', newRate.toString());
+      if (isSpeaking && !isPaused) { 
+          window.speechSynthesis.cancel(); 
+          setTimeout(() => speakNextChunk(), 50); 
+      }
+  };
+  
+  const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => { 
+      const v = voices.find(val => val.name === e.target.value); 
+      if (v) { 
+          setSelectedVoice(v); 
+          localStorage.setItem('reader_selected_voice', v.name);
+          if (isSpeaking && !isPaused) { 
+              window.speechSynthesis.cancel(); 
+              setTimeout(() => speakNextChunk(), 50); 
+          }
+      }
+  };
 
 
 
@@ -1948,6 +2008,7 @@ export default function StoryFetcher() {
                                           const next = e.target.value as 'browser' | 'edge';
                                           if (isSpeaking || isPaused) stopSpeech();
                                           setTtsEngine(next);
+                                          localStorage.setItem('reader_tts_engine', next);
                                       }}
                                   >
                                       <option value="edge">Edge TTS (mượt như Word - đang bị chặn, dùng browser)</option>
@@ -1963,6 +2024,7 @@ export default function StoryFetcher() {
                                           value={edgeVoice}
                                           onChange={(e) => {
                                               setEdgeVoice(e.target.value);
+                                              localStorage.setItem('reader_edge_voice', e.target.value);
                                               if (ttsEngine === 'edge' && (isSpeaking || isPaused)) stopSpeech();
                                           }}
                                       >
@@ -1986,24 +2048,23 @@ export default function StoryFetcher() {
                               </div>
 
                               <div className="flex items-center gap-3">
-                                  <span className="text-xs font-bold text-slate-500">Độ dài</span>
+                                  <span className="text-xs font-bold text-slate-500">Gộp đoạn</span>
                                   <input
                                       type="range"
-                                      min="200"
-                                      max="3000"
-                                      step="100"
-                                      value={ttsChunkChars}
+                                      min="1"
+                                      max="10"
+                                      step="1"
+                                      value={chunksToMerge}
                                       onChange={(e) => {
                                           const v = parseInt(e.target.value);
-                                          setTtsChunkChars(v);
-                                          localStorage.setItem('reader_tts_chunk_chars', String(v));
+                                          setChunksToMerge(v);
+                                          localStorage.setItem('reader_chunks_to_merge', String(v));
                                           if (isSpeaking || isPaused) stopSpeech();
-                                          // Re-split immediately for smoother reading next time.
-                                          if (translatedContent) processTranslatedText(translatedContent);
                                       }}
                                       className="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                                      title="Số đoạn được gộp lại đọc một lần (càng nhiều càng mượt)"
                                   />
-                                  <span className="text-xs font-bold text-slate-700 w-[52px] text-right">{ttsChunkChars}</span>
+                                  <span className="text-xs font-bold text-slate-700 w-[52px] text-right">{chunksToMerge} đoạn</span>
                               </div>
                               
                               <div className="flex gap-2">
