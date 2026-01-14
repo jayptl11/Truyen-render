@@ -115,7 +115,7 @@ export default function StoryFetcher() {
   const [showStats, setShowStats] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [selectedChaptersForExport, setSelectedChaptersForExport] = useState<string[]>([]);
-    const [exportTxtSeparatorStyle, setExportTxtSeparatorStyle] = useState<'blank' | 'line'>('blank');
+    const [exportTxtSeparatorStyle, setExportTxtSeparatorStyle] = useState<'none' | 'line'>('none');
   const [selectedChaptersForDelete, setSelectedChaptersForDelete] = useState<string[]>([]);
   const [chapterStartTime, setChapterStartTime] = useState<number | null>(null);
   
@@ -192,8 +192,13 @@ export default function StoryFetcher() {
     }
 
     const savedExportSeparator = localStorage.getItem('reader_export_txt_separator');
-    if (savedExportSeparator === 'blank' || savedExportSeparator === 'line') {
-        setExportTxtSeparatorStyle(savedExportSeparator);
+    // Backward compatible: previously we used 'blank' (insert blank lines). Now user wants no separator.
+    if (savedExportSeparator === 'line') {
+        setExportTxtSeparatorStyle('line');
+    } else if (savedExportSeparator === 'blank') {
+        setExportTxtSeparatorStyle('none');
+    } else if (savedExportSeparator === 'none') {
+        setExportTxtSeparatorStyle('none');
     }
 
     const savedAiPriority = localStorage.getItem('reader_ai_priority');
@@ -615,13 +620,13 @@ export default function StoryFetcher() {
           // Xuất nhiều chương được chọn
           const chaptersToExport = translatedChapters
               .filter(c => selectedChaptersForExport.includes(c.url))
-              .reverse(); // Reverse để giữ thứ tự đúng
+              .sort((a, b) => a.timestamp - b.timestamp); // Tải trước (timestamp nhỏ) ở trên, tải sau ở dưới
           
           contentToExport = chaptersToExport.map((chapter, index) => {
               const separator = index > 0
                   ? (exportTxtSeparatorStyle === 'line'
                       ? '\n\n' + '='.repeat(50) + '\n\n'
-                      : '\n\n\n')
+                      : '')
                   : '';
               return separator + chapter.translatedContent;
           }).join('');
@@ -655,7 +660,7 @@ export default function StoryFetcher() {
           // Xuất nhiều chương
           const chaptersToExport = translatedChapters
               .filter(c => selectedChaptersForExport.includes(c.url))
-              .reverse();
+              .sort((a, b) => a.timestamp - b.timestamp); // Tải trước (timestamp nhỏ) ở trên
           
           contentToExport = chaptersToExport.map((chapter, index) => {
               const separator = index > 0 ? '<div style="page-break-before: always;"></div>' : '';
@@ -2402,7 +2407,7 @@ export default function StoryFetcher() {
                                </div>
                            </div>
                            <div className="max-h-96 overflow-y-auto space-y-1 custom-scrollbar border border-slate-200 rounded-lg p-2 bg-white">
-                               {translatedChapters.slice().reverse().map((chapter) => (
+                               {translatedChapters.slice().sort((a, b) => a.timestamp - b.timestamp).map((chapter) => (
                                    <label 
                                        key={chapter.url} 
                                        className="flex items-center gap-3 p-2 hover:bg-white rounded-lg cursor-pointer transition-colors"
@@ -2431,14 +2436,14 @@ export default function StoryFetcher() {
                            <div className="mt-3 flex items-center justify-between gap-3 p-3 bg-white border border-slate-200 rounded-xl">
                                <div className="min-w-0">
                                    <div className="text-xs font-bold text-slate-700">Ngăn cách khi ghép TXT</div>
-                                   <div className="text-[11px] text-slate-500">Mặc định: không dùng dấu =====</div>
+                                   <div className="text-[11px] text-slate-500">Mặc định: không ngăn cách</div>
                                </div>
                                <select
                                    value={exportTxtSeparatorStyle}
-                                   onChange={(e) => setExportTxtSeparatorStyle(e.target.value as 'blank' | 'line')}
+                                   onChange={(e) => setExportTxtSeparatorStyle(e.target.value as 'none' | 'line')}
                                    className="text-xs px-3 py-2 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400"
                                >
-                                   <option value="blank">Dòng trống</option>
+                                   <option value="none">Không ngăn cách</option>
                                    <option value="line">Dấu =====</option>
                                </select>
                            </div>
