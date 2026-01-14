@@ -48,6 +48,9 @@ export default function StoryFetcher() {
   const [analysisType, setAnalysisType] = useState<'summary' | 'explain' | null>(null);
   
   const [apiKeys, setApiKeys] = useState<string[]>(['', '', '']);
+  const [chatgptKeys, setChatgptKeys] = useState<string[]>(['', '', '']);
+  const [groqKeys, setGroqKeys] = useState<string[]>(['', '', '']);
+  const [deepseekKeys, setDeepseekKeys] = useState<string[]>(['', '', '']);
   const [showApiKeyInput, setShowApiKeyInput] = useState(false);
   
   // --- AUTO & TIMER & COUNTER STATES ---
@@ -756,18 +759,51 @@ export default function StoryFetcher() {
   };
 
   const fetchTranslation = async (text: string, styleOverride?: 'modern' | 'ancient') => {
-      // GEMINI LOGIC
-      const validKeys = apiKeys.filter(k => k && k.trim().length > 0);
-      if (validKeys.length === 0) throw new Error("Cần nhập ít nhất 1 API Key.");
+      const validGeminiKeys = apiKeys.filter(k => k && k.trim().length > 0);
+      const validChatgptKeys = chatgptKeys.filter(k => k && k.trim().length > 0);
+      const validGroqKeys = groqKeys.filter(k => k && k.trim().length > 0);
+      const validDeepseekKeys = deepseekKeys.filter(k => k && k.trim().length > 0);
+      
+      if (validGeminiKeys.length === 0 && validChatgptKeys.length === 0 && validGroqKeys.length === 0 && validDeepseekKeys.length === 0) {
+          throw new Error("Cần nhập ít nhất 1 API Key (Gemini/ChatGPT/Groq/DeepSeek).");
+      }
       
       // Sử dụng styleOverride nếu có, nếu không thì dùng autoTranslationStyle hoặc translationStyle
       const styleToUse = styleOverride || (isAutoMode && autoTranslationStyle ? autoTranslationStyle : translationStyle);
       
-      // Danh sách models theo thứ tự ưu tiên
-      const models = [
-          'gemini-2.0-flash-exp',           // Gemini 2.0 Flash (ưu tiên)
-          'gemini-1.5-flash',                // Gemini 1.5 Flash
-          'gemini-2.5-flash-preview-09-2025' // Gemini 2.5 Flash
+      // Danh sách Gemini models theo thứ tự ưu tiên
+      // Gemini 1.5 Flash: FREE 1M token/phút, context 1M tokens - TỐT NHẤT cho truyện dài
+      // Gemini 2.0 Flash: FREE nhưng giới hạn thấp hơn
+      // Gemini 1.5 Pro: Context 2M tokens, FREE 2 RPM - dự phòng
+      const geminiModels = [
+          'gemini-1.5-flash-latest',        // Gemini 1.5 Flash - ƯU TIÊN cho free tier
+          'gemini-2.0-flash-exp',           // Gemini 2.0 Flash Experimental
+          'gemini-1.5-pro-latest'           // Gemini 1.5 Pro - context lớn nhất
+      ];
+      
+      // Danh sách ChatGPT models - TẤT CẢ ĐỀU TÍNH PHÍ
+      // GPT-4o-mini: $0.15/1M input, $0.6/1M output - rẻ nhất
+      // GPT-4o: $2.5/1M input, $10/1M output - chất lượng cao
+      // GPT-3.5-turbo: $0.5/1M input, $1.5/1M output
+      const chatgptModels = [
+          'gpt-4o-mini',      // Rẻ nhất, phù hợp truyện dài
+          'gpt-3.5-turbo',    // Cân bằng giá/chất lượng
+          'gpt-4o'            // Chất lượng cao nhất (đắt)
+      ];
+      
+      // Danh sách Groq models - FREE, NHANH NHẤT (500+ tokens/s)
+      // llama-3.3-70b: Mới nhất, chất lượng tốt
+      // llama-3.1-70b: Ổn định
+      // mixtral-8x7b: Context 32k
+      const groqModels = [
+          'llama-3.3-70b-versatile',  // LLaMA 3.3 70B - mới nhất
+          'llama-3.1-70b-versatile',  // LLaMA 3.1 70B - ổn định
+          'mixtral-8x7b-32768'        // Mixtral 8x7B - context lớn
+      ];
+      
+      // Danh sách DeepSeek models - FREE, context 64k
+      const deepseekModels = [
+          'deepseek-chat'  // DeepSeek Chat - FREE unlimited
       ];
       
       let lastError;
@@ -784,9 +820,9 @@ export default function StoryFetcher() {
     Văn bản cần viết lại:\n\n`
         : `Bạn là biên tập viên truyện hiện đại chuyên nghiệp. Hãy viết lại đoạn convert Hán Việt sau sang tiếng Việt hiện đại, văn phong tự nhiên, dễ hiểu, phù hợp với truyện đô thị/ngôn tình hiện đại (dùng anh/em/cậu/tớ tùy ngữ cảnh). Giữ nguyên cấu trúc đoạn văn, tuyệt đối không thêm lời dẫn:\n\n`;
 
-      // Thử tất cả models trước khi chuyển sang API key tiếp theo
-      for (const key of validKeys) {
-        for (const model of models) {
+      // Thử Gemini trước (ưu tiên vì có quota free tốt)
+      for (const key of validGeminiKeys) {
+        for (const model of geminiModels) {
             try {
                 const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -821,7 +857,169 @@ export default function StoryFetcher() {
             }
         }
       }
-      throw lastError || new Error("Tất cả API Key và models đều lỗi hoặc hết hạn mức (429).");
+      
+      // Nếu Gemini thất bại, thử Groq (FREE, nhanh nhất)
+      for (const key of validGroqKeys) {
+        for (const model of groqModels) {
+            try {
+                const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${key}`
+                    },
+                    body: JSON.stringify({
+                        model: model,
+                        messages: [
+                            {
+                                role: 'system',
+                                content: styleToUse === 'ancient'
+                                    ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
+                                    : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
+                            },
+                            { role: 'user', content: text }
+                        ],
+                        temperature: 0.3,
+                        max_tokens: 4000
+                    })
+                });
+                
+                if (response.status === 429) {
+                    console.warn(`Groq ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
+                    continue;
+                }
+                
+                if (!response.ok) {
+                    console.warn(`Groq ${model} lỗi ${response.status}, thử model khác...`);
+                    continue;
+                }
+                
+                const result = await response.json();
+                let translatedText = result.choices?.[0]?.message?.content;
+                
+                if (translatedText) {
+                    console.log(`✅ Dịch thành công với Groq ${model} và key ...${key.slice(-4)}`);
+                    return translatedText
+                        .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
+                        .replace(/\*\*/g, '')
+                        .trim() + '\n\n=-=';
+                }
+            } catch (e: any) {
+                lastError = e;
+                console.warn(`Groq ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
+            }
+        }
+      }
+      
+      // Nếu Gemini và Groq thất bại, thử DeepSeek (FREE unlimited)
+      for (const key of validDeepseekKeys) {
+        for (const model of deepseekModels) {
+            try {
+                const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${key}`
+                    },
+                    body: JSON.stringify({
+                        model: model,
+                        messages: [
+                            {
+                                role: 'system',
+                                content: styleToUse === 'ancient'
+                                    ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
+                                    : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
+                            },
+                            { role: 'user', content: text }
+                        ],
+                        temperature: 0.3
+                    })
+                });
+                
+                if (response.status === 429) {
+                    console.warn(`DeepSeek ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
+                    continue;
+                }
+                
+                if (!response.ok) {
+                    console.warn(`DeepSeek ${model} lỗi ${response.status}, thử model khác...`);
+                    continue;
+                }
+                
+                const result = await response.json();
+                let translatedText = result.choices?.[0]?.message?.content;
+                
+                if (translatedText) {
+                    console.log(`✅ Dịch thành công với DeepSeek ${model} và key ...${key.slice(-4)}`);
+                    return translatedText
+                        .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
+                        .replace(/\*\*/g, '')
+                        .trim() + '\n\n=-=';
+                }
+            } catch (e: any) {
+                lastError = e;
+                console.warn(`DeepSeek ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
+            }
+        }
+      }
+      
+      // Cuối cùng thử ChatGPT (tính phí)
+      for (const key of validChatgptKeys) {
+        for (const model of chatgptModels) {
+            try {
+                const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${key}`
+                    },
+                    body: JSON.stringify({
+                        model: model,
+                        messages: [
+                            {
+                                role: 'system',
+                                content: styleToUse === 'ancient'
+                                    ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang chuyên nghiệp. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc, câu chữ rõ ràng tự nhiên. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
+                                    : 'Bạn là biên tập viên truyện hiện đại chuyên nghiệp. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên, dễ hiểu, phù hợp truyện đô thị/ngôn tình (anh/em/cậu/tớ). Không thêm lời dẫn.'
+                            },
+                            {
+                                role: 'user',
+                                content: text
+                            }
+                        ],
+                        temperature: 0.3,
+                        max_tokens: 4000
+                    })
+                });
+                
+                if (response.status === 429) {
+                    console.warn(`ChatGPT ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
+                    continue;
+                }
+                
+                if (!response.ok) {
+                    console.warn(`ChatGPT ${model} lỗi ${response.status}, thử model khác...`);
+                    continue;
+                }
+                
+                const result = await response.json();
+                let translatedText = result.choices?.[0]?.message?.content;
+                
+                if (translatedText) {
+                    console.log(`✅ Dịch thành công với ChatGPT ${model} và key ...${key.slice(-4)}`);
+                    return translatedText
+                        .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
+                        .replace(/\*\*/g, '')
+                        .trim() + '\n\n=-=';
+                }
+            } catch (e: any) {
+                lastError = e;
+                console.warn(`ChatGPT ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
+            }
+        }
+      }
+      
+      throw lastError || new Error("Tất cả API Key (Gemini/Groq/DeepSeek/ChatGPT) và models đều lỗi hoặc hết hạn mức.");
   };
 
   // --- PRELOAD LOGIC ---
@@ -1068,7 +1266,7 @@ export default function StoryFetcher() {
                 <p className="text-[10px] text-indigo-200 opacity-80">Convert hán việt sang thuần việt</p>
              </div>
              <div className="flex gap-2">
-                <button onClick={() => setShowApiKeyInput(!showApiKeyInput)} className={`p-2 rounded-full transition-colors text-white ${apiKeys.some(k => k) ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100' : 'bg-red-500/20 hover:bg-red-500/30 text-red-100 animate-pulse'}`} title="API Key"><Key size={18}/></button>
+                <button onClick={() => setShowApiKeyInput(!showApiKeyInput)} className={`p-2 rounded-full transition-colors text-white ${(apiKeys.some(k => k) || chatgptKeys.some(k => k) || groqKeys.some(k => k) || deepseekKeys.some(k => k)) ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100' : 'bg-red-500/20 hover:bg-red-500/30 text-red-100 animate-pulse'}`} title="API Key"><Key size={18}/></button>
              </div>
           </div>
 
@@ -1076,16 +1274,112 @@ export default function StoryFetcher() {
           <div className="flex-1 overflow-y-auto p-4 space-y-4 md:custom-scrollbar pb-24 md:pb-4">
              {/* API Key Panel */}
              {showApiKeyInput && (
-                <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-3 animate-in fade-in slide-in-from-top-2">
-                    <div className="flex justify-between mb-2"><span className="text-xs font-bold text-yellow-800 uppercase">Cấu hình API Key (Gemini)</span><button onClick={() => setShowApiKeyInput(false)}><X size={14} className="text-yellow-600"/></button></div>
-                    <div className="space-y-2">
-                        {apiKeys.map((k, i) => (
-                            <div key={i} className="relative flex items-center">
-                                <span className="absolute left-2 text-[10px] font-bold text-slate-400">#{i+1}</span>
-                                <input type="password" value={k} onChange={(e) => updateKey(i, e.target.value)} className="w-full pl-8 pr-8 py-2 text-xs border border-yellow-300 rounded focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500 bg-white" placeholder="Dán API Key vào đây..."/>
-                                {k && <button onClick={() => updateKey(i, '')} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
-                            </div>
-                        ))}
+                <div className="bg-yellow-50 border border-yellow-200 rounded-xl p-3 animate-in fade-in slide-in-from-top-2 space-y-3">
+                    {/* Gemini Keys */}
+                    <div>
+                        <div className="flex justify-between mb-2">
+                            <span className="text-xs font-bold text-yellow-800 uppercase">🔑 Gemini API Keys</span>
+                            <button onClick={() => setShowApiKeyInput(false)}><X size={14} className="text-yellow-600"/></button>
+                        </div>
+                        <div className="space-y-2">
+                            {apiKeys.map((k, i) => (
+                                <div key={i} className="relative flex items-center">
+                                    <span className="absolute left-2 text-[10px] font-bold text-slate-400">#{i+1}</span>
+                                    <input type="password" value={k} onChange={(e) => updateKey(i, e.target.value)} className="w-full pl-8 pr-8 py-2 text-xs border border-yellow-300 rounded focus:border-yellow-500 focus:ring-1 focus:ring-yellow-500 bg-white" placeholder="Gemini API Key..."/>
+                                    {k && <button onClick={() => updateKey(i, '')} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    
+                    {/* Groq Keys */}
+                    <div>
+                        <div className="flex justify-between mb-2">
+                            <span className="text-xs font-bold text-blue-800 uppercase">⚡ Groq API Keys (FREE, Nhanh nhất)</span>
+                        </div>
+                        <div className="space-y-2">
+                            {groqKeys.map((k, i) => (
+                                <div key={i} className="relative flex items-center">
+                                    <span className="absolute left-2 text-[10px] font-bold text-slate-400">#{i+1}</span>
+                                    <input 
+                                        type="password" 
+                                        value={k} 
+                                        onChange={(e) => {
+                                            const newKeys = [...groqKeys];
+                                            newKeys[i] = e.target.value;
+                                            setGroqKeys(newKeys);
+                                        }} 
+                                        className="w-full pl-8 pr-8 py-2 text-xs border border-blue-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white" 
+                                        placeholder="Groq API Key (gsk_...)..."
+                                    />
+                                    {k && <button onClick={() => {
+                                        const newKeys = [...groqKeys];
+                                        newKeys[i] = '';
+                                        setGroqKeys(newKeys);
+                                    }} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    
+                    {/* DeepSeek Keys */}
+                    <div>
+                        <div className="flex justify-between mb-2">
+                            <span className="text-xs font-bold text-purple-800 uppercase">🤖 DeepSeek API Keys (FREE Unlimited)</span>
+                        </div>
+                        <div className="space-y-2">
+                            {deepseekKeys.map((k, i) => (
+                                <div key={i} className="relative flex items-center">
+                                    <span className="absolute left-2 text-[10px] font-bold text-slate-400">#{i+1}</span>
+                                    <input 
+                                        type="password" 
+                                        value={k} 
+                                        onChange={(e) => {
+                                            const newKeys = [...deepseekKeys];
+                                            newKeys[i] = e.target.value;
+                                            setDeepseekKeys(newKeys);
+                                        }} 
+                                        className="w-full pl-8 pr-8 py-2 text-xs border border-purple-300 rounded focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white" 
+                                        placeholder="DeepSeek API Key (sk-...)..."
+                                    />
+                                    {k && <button onClick={() => {
+                                        const newKeys = [...deepseekKeys];
+                                        newKeys[i] = '';
+                                        setDeepseekKeys(newKeys);
+                                    }} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    
+                    {/* ChatGPT Keys */}
+                    <div>
+                        <div className="flex justify-between mb-2">
+                            <span className="text-xs font-bold text-green-800 uppercase">🤖 ChatGPT API Keys</span>
+                        </div>
+                        <div className="space-y-2">
+                            {chatgptKeys.map((k, i) => (
+                                <div key={i} className="relative flex items-center">
+                                    <span className="absolute left-2 text-[10px] font-bold text-slate-400">#{i+1}</span>
+                                    <input 
+                                        type="password" 
+                                        value={k} 
+                                        onChange={(e) => {
+                                            const newKeys = [...chatgptKeys];
+                                            newKeys[i] = e.target.value;
+                                            setChatgptKeys(newKeys);
+                                        }} 
+                                        className="w-full pl-8 pr-8 py-2 text-xs border border-green-300 rounded focus:border-green-500 focus:ring-1 focus:ring-green-500 bg-white" 
+                                        placeholder="ChatGPT API Key (sk-...)..."
+                                    />
+                                    {k && <button onClick={() => {
+                                        const newKeys = [...chatgptKeys];
+                                        newKeys[i] = '';
+                                        setChatgptKeys(newKeys);
+                                    }} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
+                                </div>
+                            ))}
+                        </div>
                     </div>
                 </div>
              )}
