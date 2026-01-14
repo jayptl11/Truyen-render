@@ -24,6 +24,23 @@ const ParagraphItem = memo(({ text, onClick, index, setRef }: any) => {
 ParagraphItem.displayName = 'ParagraphItem';
 
 export default function StoryFetcher() {
+
+  type AiProvider = 'gemini' | 'groq' | 'qwen' | 'deepseek' | 'chatgpt';
+  const ALL_AI_PROVIDERS: AiProvider[] = ['gemini', 'groq', 'qwen', 'deepseek', 'chatgpt'];
+  const DEFAULT_AI_PRIORITY: AiProvider[] = ['gemini', 'groq', 'qwen', 'deepseek', 'chatgpt'];
+
+  const normalizeAiPriority = (value: unknown): AiProvider[] => {
+      const raw = Array.isArray(value) ? value : [];
+      const filtered = raw.filter((p): p is AiProvider => ALL_AI_PROVIDERS.includes(p as AiProvider));
+      const unique: AiProvider[] = [];
+      for (const p of filtered) {
+          if (!unique.includes(p)) unique.push(p);
+      }
+      for (const p of ALL_AI_PROVIDERS) {
+          if (!unique.includes(p)) unique.push(p);
+      }
+      return unique;
+  };
   const [url, setUrl] = useState('');
   const [content, setContent] = useState('');
   const [translatedContent, setTranslatedContent] = useState('');
@@ -52,6 +69,7 @@ export default function StoryFetcher() {
   const [groqKeys, setGroqKeys] = useState<string[]>(['', '', '']);
   const [deepseekKeys, setDeepseekKeys] = useState<string[]>(['', '', '']);
   const [qwenKeys, setQwenKeys] = useState<string[]>(['', '', '']);
+    const [aiPriority, setAiPriority] = useState<AiProvider[]>(DEFAULT_AI_PRIORITY);
   const [showApiKeyInput, setShowApiKeyInput] = useState(false);
   
   // --- AUTO & TIMER & COUNTER STATES ---
@@ -97,6 +115,7 @@ export default function StoryFetcher() {
   const [showStats, setShowStats] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [selectedChaptersForExport, setSelectedChaptersForExport] = useState<string[]>([]);
+    const [exportTxtSeparatorStyle, setExportTxtSeparatorStyle] = useState<'blank' | 'line'>('blank');
   const [selectedChaptersForDelete, setSelectedChaptersForDelete] = useState<string[]>([]);
   const [chapterStartTime, setChapterStartTime] = useState<number | null>(null);
   
@@ -171,7 +190,42 @@ export default function StoryFetcher() {
     if (savedStats) {
         try { setReadingStats(JSON.parse(savedStats)); } catch {}
     }
+
+    const savedExportSeparator = localStorage.getItem('reader_export_txt_separator');
+    if (savedExportSeparator === 'blank' || savedExportSeparator === 'line') {
+        setExportTxtSeparatorStyle(savedExportSeparator);
+    }
+
+    const savedAiPriority = localStorage.getItem('reader_ai_priority');
+    if (savedAiPriority) {
+        try {
+            const parsed = JSON.parse(savedAiPriority);
+            setAiPriority(normalizeAiPriority(parsed));
+        } catch {}
+    }
   }, []);
+
+  useEffect(() => {
+      localStorage.setItem('reader_export_txt_separator', exportTxtSeparatorStyle);
+  }, [exportTxtSeparatorStyle]);
+
+  useEffect(() => {
+      localStorage.setItem('reader_ai_priority', JSON.stringify(aiPriority));
+  }, [aiPriority]);
+
+  const moveAiProvider = (provider: AiProvider, direction: -1 | 1) => {
+      setAiPriority(prev => {
+          const idx = prev.indexOf(provider);
+          if (idx < 0) return prev;
+          const nextIdx = idx + direction;
+          if (nextIdx < 0 || nextIdx >= prev.length) return prev;
+          const next = [...prev];
+          const tmp = next[idx];
+          next[idx] = next[nextIdx];
+          next[nextIdx] = tmp;
+          return next;
+      });
+  };
 
   // --- BATCH TRANSLATION FUNCTIONS ---
   const startBatchTranslation = async (startUrl: string, count: number) => {
@@ -564,7 +618,11 @@ export default function StoryFetcher() {
               .reverse(); // Reverse để giữ thứ tự đúng
           
           contentToExport = chaptersToExport.map((chapter, index) => {
-              const separator = index > 0 ? '\n\n' + '='.repeat(50) + '\n\n' : '';
+              const separator = index > 0
+                  ? (exportTxtSeparatorStyle === 'line'
+                      ? '\n\n' + '='.repeat(50) + '\n\n'
+                      : '\n\n\n')
+                  : '';
               return separator + chapter.translatedContent;
           }).join('');
       } else if (translatedContent) {
@@ -847,6 +905,13 @@ export default function StoryFetcher() {
       ];
       
       let lastError;
+
+      const sanitizeTranslated = (translatedText: string) => {
+          return translatedText
+              .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
+              .replace(/\*\*/g, '')
+              .trim() + '\n\n=-=';
+      };
       const promptText = styleToUse === 'ancient' 
         ? `Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Hãy viết lại đoạn convert Hán Việt sau sang tiếng Việt mượt mà theo phong cách cổ trang nhưng DỄ ĐỌC, câu chữ rõ ràng, tự nhiên.
 
@@ -860,265 +925,278 @@ export default function StoryFetcher() {
     Văn bản cần viết lại:\n\n`
         : `Bạn là biên tập viên truyện hiện đại chuyên nghiệp. Hãy viết lại đoạn convert Hán Việt sau sang tiếng Việt hiện đại, văn phong tự nhiên, dễ hiểu, phù hợp với truyện đô thị/ngôn tình hiện đại (dùng anh/em/cậu/tớ tùy ngữ cảnh). Giữ nguyên cấu trúc đoạn văn, tuyệt đối không thêm lời dẫn:\n\n`;
 
-      // Thử Gemini trước (ưu tiên vì có quota free tốt)
-      for (const key of validGeminiKeys) {
-        for (const model of geminiModels) {
-            try {
-                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
-                    method: 'POST', headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ contents: [{ parts: [{ text: promptText + text }] }] })
-                });
-                
-                if (response.status === 429) { 
-                    console.warn(`Model ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`); 
-                    continue; 
-                }
-                
-                if (!response.ok) {
-                    console.warn(`Model ${model} lỗi ${response.status}, thử model khác...`);
-                    continue;
-                }
-                
-                const result = await response.json();
-                let translatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
-                
-                if (translatedText) {
-                    console.log(`✅ Dịch thành công với model ${model} và key ...${key.slice(-4)}`);
-                    // Sanitize common markdown artifacts (e.g., **Chương ...**) to keep reading UI clean.
-                    return translatedText
-                        .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
-                        .replace(/\*\*/g, '')
-                        .trim() + '\n\n=-=';
-                }
-            } catch (e: any) {
-                lastError = e;
-                console.warn(`Model ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
-                if (e.message && e.message.includes('429')) continue;
-            }
-        }
-      }
-      
-      // Nếu Gemini thất bại, thử Groq (FREE, nhanh nhất)
-      for (const key of validGroqKeys) {
-        for (const model of groqModels) {
-            try {
-                const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${key}`
-                    },
-                    body: JSON.stringify({
-                        model: model,
-                        messages: [
-                            {
-                                role: 'system',
-                                content: styleToUse === 'ancient'
-                                    ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
-                                    : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
-                            },
-                            { role: 'user', content: text }
-                        ],
-                        temperature: 0.3,
-                        // Một số model/Groq account trả 400 nếu max_tokens quá cao hoặc context quá dài.
-                        // Giữ thấp để tăng tỷ lệ thành công khi dịch chương dài.
-                        max_tokens: 2048
-                    })
-                });
-                
-                if (response.status === 429) {
-                    console.warn(`Groq ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
-                    continue;
-                }
-                
-                if (!response.ok) {
-                    let details = '';
-                    try {
-                        const json = await response.json();
-                        details = (json?.error?.message || json?.message || JSON.stringify(json)).toString();
-                    } catch {
-                        try { details = await response.text(); } catch {}
-                    }
-                    const trimmed = details ? details.slice(0, 300) : '';
-                    console.warn(`Groq ${model} lỗi ${response.status}${trimmed ? `: ${trimmed}` : ''}, thử model khác...`);
-                    continue;
-                }
-                
-                const result = await response.json();
-                let translatedText = result.choices?.[0]?.message?.content;
-                
-                if (translatedText) {
-                    console.log(`✅ Dịch thành công với Groq ${model} và key ...${key.slice(-4)}`);
-                    return translatedText
-                        .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
-                        .replace(/\*\*/g, '')
-                        .trim() + '\n\n=-=';
-                }
-            } catch (e: any) {
-                lastError = e;
-                console.warn(`Groq ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
-            }
-        }
-      }
-      
-      // Nếu Gemini và Groq thất bại, thử Qwen (FREE, tốt cho tiếng Trung)
-      for (const key of validQwenKeys) {
-        for (const model of qwenModels) {
-            try {
-                const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${key}`
-                    },
-                    body: JSON.stringify({
-                        model: model,
-                        messages: [
-                            {
-                                role: 'system',
-                                content: styleToUse === 'ancient'
-                                    ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
-                                    : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
-                            },
-                            { role: 'user', content: text }
-                        ],
-                        temperature: 0.3
-                    })
-                });
-                
-                if (response.status === 429) {
-                    console.warn(`Qwen ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
-                    continue;
-                }
-                
-                if (!response.ok) {
-                    console.warn(`Qwen ${model} lỗi ${response.status}, thử model khác...`);
-                    continue;
-                }
-                
-                const result = await response.json();
-                let translatedText = result.choices?.[0]?.message?.content;
-                
-                if (translatedText) {
-                    console.log(`✅ Dịch thành công với Qwen ${model} và key ...${key.slice(-4)}`);
-                    return translatedText
-                        .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
-                        .replace(/\*\*/g, '')
-                        .trim() + '\n\n=-=';
-                }
-            } catch (e: any) {
-                lastError = e;
-                console.warn(`Qwen ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
-            }
-        }
-      }
-      
-      // Nếu Gemini, Groq và Qwen thất bại, thử DeepSeek (FREE unlimited)
-      for (const key of validDeepseekKeys) {
-        for (const model of deepseekModels) {
-            try {
-                const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${key}`
-                    },
-                    body: JSON.stringify({
-                        model: model,
-                        messages: [
-                            {
-                                role: 'system',
-                                content: styleToUse === 'ancient'
-                                    ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
-                                    : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
-                            },
-                            { role: 'user', content: text }
-                        ],
-                        temperature: 0.3
-                    })
-                });
-                
-                if (response.status === 429) {
-                    console.warn(`DeepSeek ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
-                    continue;
-                }
-                
-                if (!response.ok) {
-                    console.warn(`DeepSeek ${model} lỗi ${response.status}, thử model khác...`);
-                    continue;
-                }
-                
-                const result = await response.json();
-                let translatedText = result.choices?.[0]?.message?.content;
-                
-                if (translatedText) {
-                    console.log(`✅ Dịch thành công với DeepSeek ${model} và key ...${key.slice(-4)}`);
-                    return translatedText
-                        .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
-                        .replace(/\*\*/g, '')
-                        .trim() + '\n\n=-=';
-                }
-            } catch (e: any) {
-                lastError = e;
-                console.warn(`DeepSeek ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
-            }
-        }
-      }
-      
-      // Cuối cùng thử ChatGPT (tính phí)
-      for (const key of validChatgptKeys) {
-        for (const model of chatgptModels) {
-            try {
-                const response = await fetch('https://api.openai.com/v1/chat/completions', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${key}`
-                    },
-                    body: JSON.stringify({
-                        model: model,
-                        messages: [
-                            {
-                                role: 'system',
-                                content: styleToUse === 'ancient'
-                                    ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang chuyên nghiệp. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc, câu chữ rõ ràng tự nhiên. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
-                                    : 'Bạn là biên tập viên truyện hiện đại chuyên nghiệp. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên, dễ hiểu, phù hợp truyện đô thị/ngôn tình (anh/em/cậu/tớ). Không thêm lời dẫn.'
-                            },
-                            {
-                                role: 'user',
-                                content: text
-                            }
-                        ],
-                        temperature: 0.3,
-                        max_tokens: 4000
-                    })
-                });
-                
-                if (response.status === 429) {
-                    console.warn(`ChatGPT ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
-                    continue;
-                }
-                
-                if (!response.ok) {
-                    console.warn(`ChatGPT ${model} lỗi ${response.status}, thử model khác...`);
-                    continue;
-                }
-                
-                const result = await response.json();
-                let translatedText = result.choices?.[0]?.message?.content;
-                
-                if (translatedText) {
-                    console.log(`✅ Dịch thành công với ChatGPT ${model} và key ...${key.slice(-4)}`);
-                    return translatedText
-                        .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
-                        .replace(/\*\*/g, '')
-                        .trim() + '\n\n=-=';
-                }
-            } catch (e: any) {
-                lastError = e;
-                console.warn(`ChatGPT ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
-            }
-        }
+      const tryGemini = async () => {
+          for (const key of validGeminiKeys) {
+              for (const model of geminiModels) {
+                  try {
+                      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
+                          method: 'POST', headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ contents: [{ parts: [{ text: promptText + text }] }] })
+                      });
+
+                      if (response.status === 429) {
+                          console.warn(`Model ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
+                          continue;
+                      }
+
+                      if (!response.ok) {
+                          console.warn(`Model ${model} lỗi ${response.status}, thử model khác...`);
+                          continue;
+                      }
+
+                      const result = await response.json();
+                      let translatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+
+                      if (translatedText) {
+                          console.log(`✅ Dịch thành công với model ${model} và key ...${key.slice(-4)}`);
+                          return sanitizeTranslated(translatedText);
+                      }
+                  } catch (e: any) {
+                      lastError = e;
+                      console.warn(`Model ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
+                      if (e.message && e.message.includes('429')) continue;
+                  }
+              }
+          }
+          return undefined;
+      };
+
+      const tryGroq = async () => {
+          for (const key of validGroqKeys) {
+              for (const model of groqModels) {
+                  try {
+                      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+                          method: 'POST',
+                          headers: {
+                              'Content-Type': 'application/json',
+                              'Authorization': `Bearer ${key}`
+                          },
+                          body: JSON.stringify({
+                              model: model,
+                              messages: [
+                                  {
+                                      role: 'system',
+                                      content: styleToUse === 'ancient'
+                                          ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
+                                          : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
+                                  },
+                                  { role: 'user', content: text }
+                              ],
+                              temperature: 0.3,
+                              max_tokens: 2048
+                          })
+                      });
+
+                      if (response.status === 429) {
+                          console.warn(`Groq ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
+                          continue;
+                      }
+
+                      if (!response.ok) {
+                          let details = '';
+                          try {
+                              const json = await response.json();
+                              details = (json?.error?.message || json?.message || JSON.stringify(json)).toString();
+                          } catch {
+                              try { details = await response.text(); } catch {}
+                          }
+                          const trimmed = details ? details.slice(0, 300) : '';
+                          console.warn(`Groq ${model} lỗi ${response.status}${trimmed ? `: ${trimmed}` : ''}, thử model khác...`);
+                          continue;
+                      }
+
+                      const result = await response.json();
+                      let translatedText = result.choices?.[0]?.message?.content;
+
+                      if (translatedText) {
+                          console.log(`✅ Dịch thành công với Groq ${model} và key ...${key.slice(-4)}`);
+                          return sanitizeTranslated(translatedText);
+                      }
+                  } catch (e: any) {
+                      lastError = e;
+                      console.warn(`Groq ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
+                  }
+              }
+          }
+          return undefined;
+      };
+
+      const tryQwen = async () => {
+          for (const key of validQwenKeys) {
+              for (const model of qwenModels) {
+                  try {
+                      const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
+                          method: 'POST',
+                          headers: {
+                              'Content-Type': 'application/json',
+                              'Authorization': `Bearer ${key}`
+                          },
+                          body: JSON.stringify({
+                              model: model,
+                              messages: [
+                                  {
+                                      role: 'system',
+                                      content: styleToUse === 'ancient'
+                                          ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
+                                          : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
+                                  },
+                                  { role: 'user', content: text }
+                              ],
+                              temperature: 0.3
+                          })
+                      });
+
+                      if (response.status === 429) {
+                          console.warn(`Qwen ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
+                          continue;
+                      }
+
+                      if (!response.ok) {
+                          console.warn(`Qwen ${model} lỗi ${response.status}, thử model khác...`);
+                          continue;
+                      }
+
+                      const result = await response.json();
+                      let translatedText = result.choices?.[0]?.message?.content;
+
+                      if (translatedText) {
+                          console.log(`✅ Dịch thành công với Qwen ${model} và key ...${key.slice(-4)}`);
+                          return sanitizeTranslated(translatedText);
+                      }
+                  } catch (e: any) {
+                      lastError = e;
+                      console.warn(`Qwen ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
+                  }
+              }
+          }
+          return undefined;
+      };
+
+      const tryDeepSeek = async () => {
+          for (const key of validDeepseekKeys) {
+              for (const model of deepseekModels) {
+                  try {
+                      const response = await fetch('https://api.deepseek.com/v1/chat/completions', {
+                          method: 'POST',
+                          headers: {
+                              'Content-Type': 'application/json',
+                              'Authorization': `Bearer ${key}`
+                          },
+                          body: JSON.stringify({
+                              model: model,
+                              messages: [
+                                  {
+                                      role: 'system',
+                                      content: styleToUse === 'ancient'
+                                          ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
+                                          : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
+                                  },
+                                  { role: 'user', content: text }
+                              ],
+                              temperature: 0.3
+                          })
+                      });
+
+                      if (response.status === 429) {
+                          console.warn(`DeepSeek ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
+                          continue;
+                      }
+
+                      if (!response.ok) {
+                          console.warn(`DeepSeek ${model} lỗi ${response.status}, thử model khác...`);
+                          continue;
+                      }
+
+                      const result = await response.json();
+                      let translatedText = result.choices?.[0]?.message?.content;
+
+                      if (translatedText) {
+                          console.log(`✅ Dịch thành công với DeepSeek ${model} và key ...${key.slice(-4)}`);
+                          return sanitizeTranslated(translatedText);
+                      }
+                  } catch (e: any) {
+                      lastError = e;
+                      console.warn(`DeepSeek ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
+                  }
+              }
+          }
+          return undefined;
+      };
+
+      const tryChatGPT = async () => {
+          for (const key of validChatgptKeys) {
+              for (const model of chatgptModels) {
+                  try {
+                      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+                          method: 'POST',
+                          headers: {
+                              'Content-Type': 'application/json',
+                              'Authorization': `Bearer ${key}`
+                          },
+                          body: JSON.stringify({
+                              model: model,
+                              messages: [
+                                  {
+                                      role: 'system',
+                                      content: styleToUse === 'ancient'
+                                          ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang chuyên nghiệp. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc, câu chữ rõ ràng tự nhiên. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
+                                          : 'Bạn là biên tập viên truyện hiện đại chuyên nghiệp. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên, dễ hiểu, phù hợp truyện đô thị/ngôn tình (anh/em/cậu/tớ). Không thêm lời dẫn.'
+                                  },
+                                  { role: 'user', content: text }
+                              ],
+                              temperature: 0.3,
+                              max_tokens: 4000
+                          })
+                      });
+
+                      if (response.status === 429) {
+                          console.warn(`ChatGPT ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
+                          continue;
+                      }
+
+                      if (!response.ok) {
+                          console.warn(`ChatGPT ${model} lỗi ${response.status}, thử model khác...`);
+                          continue;
+                      }
+
+                      const result = await response.json();
+                      let translatedText = result.choices?.[0]?.message?.content;
+
+                      if (translatedText) {
+                          console.log(`✅ Dịch thành công với ChatGPT ${model} và key ...${key.slice(-4)}`);
+                          return sanitizeTranslated(translatedText);
+                      }
+                  } catch (e: any) {
+                      lastError = e;
+                      console.warn(`ChatGPT ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
+                  }
+              }
+          }
+          return undefined;
+      };
+
+      const orderedProviders = normalizeAiPriority(aiPriority);
+      for (const provider of orderedProviders) {
+          if (provider === 'gemini' && validGeminiKeys.length > 0) {
+              const r = await tryGemini();
+              if (r) return r;
+          }
+          if (provider === 'groq' && validGroqKeys.length > 0) {
+              const r = await tryGroq();
+              if (r) return r;
+          }
+          if (provider === 'qwen' && validQwenKeys.length > 0) {
+              const r = await tryQwen();
+              if (r) return r;
+          }
+          if (provider === 'deepseek' && validDeepseekKeys.length > 0) {
+              const r = await tryDeepSeek();
+              if (r) return r;
+          }
+          if (provider === 'chatgpt' && validChatgptKeys.length > 0) {
+              const r = await tryChatGPT();
+              if (r) return r;
+          }
       }
       
       throw lastError || new Error("Tất cả API Key (Gemini/Groq/Qwen/DeepSeek/ChatGPT) và models đều lỗi hoặc hết hạn mức.");
@@ -1133,7 +1211,7 @@ export default function StoryFetcher() {
   }, [isAutoMode, nextChapterUrl, step, preloadedData, isPreloading, autoStopChapterLimit, chaptersReadCount]);
 
   const doPreload = async () => {
-      if (!nextChapterUrl || apiKeys.filter(k => k.trim()).length === 0) return;
+      if (!nextChapterUrl || !hasAnyTranslationKey()) return;
 
       // Check cache first
       const cached = translatedChapters.find(c => c.url === nextChapterUrl);
@@ -1509,6 +1587,61 @@ export default function StoryFetcher() {
                                     {k && <button onClick={() => updateChatgptKey(i, '')} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
                                 </div>
                             ))}
+                        </div>
+                    </div>
+
+                    {/* AI Priority Order */}
+                    <div className="pt-2 border-t border-yellow-200">
+                        <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-bold text-slate-800 uppercase">⭐ Ưu tiên AI (thứ tự thử khi dịch)</span>
+                            <button
+                                onClick={() => setAiPriority(DEFAULT_AI_PRIORITY)}
+                                className="text-[10px] font-bold text-slate-600 hover:text-slate-800 px-2 py-1 rounded bg-white border border-yellow-200"
+                                title="Đặt lại mặc định"
+                            >
+                                Reset
+                            </button>
+                        </div>
+                        <div className="space-y-1">
+                            {aiPriority.map((provider, idx) => {
+                                const label = provider === 'gemini' ? 'Gemini' : provider === 'groq' ? 'Groq' : provider === 'qwen' ? 'Qwen' : provider === 'deepseek' ? 'DeepSeek' : 'ChatGPT';
+                                const hasKey = provider === 'gemini'
+                                    ? apiKeys.some(k => k && k.trim())
+                                    : provider === 'groq'
+                                    ? groqKeys.some(k => k && k.trim())
+                                    : provider === 'qwen'
+                                    ? qwenKeys.some(k => k && k.trim())
+                                    : provider === 'deepseek'
+                                    ? deepseekKeys.some(k => k && k.trim())
+                                    : chatgptKeys.some(k => k && k.trim());
+                                return (
+                                    <div key={provider} className="flex items-center gap-2 p-2 bg-white rounded-lg border border-yellow-200">
+                                        <div className="text-[10px] font-bold text-slate-400 w-6">#{idx + 1}</div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="text-xs font-bold text-slate-800 truncate">{label}</div>
+                                            <div className={`text-[10px] font-bold ${hasKey ? 'text-emerald-600' : 'text-amber-600'}`}>{hasKey ? 'Có key' : 'Chưa có key'}</div>
+                                        </div>
+                                        <div className="flex gap-1">
+                                            <button
+                                                onClick={() => moveAiProvider(provider, -1)}
+                                                disabled={idx === 0}
+                                                className="text-xs px-2 py-1 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                                                title="Ưu tiên cao hơn"
+                                            >
+                                                ▲
+                                            </button>
+                                            <button
+                                                onClick={() => moveAiProvider(provider, 1)}
+                                                disabled={idx === aiPriority.length - 1}
+                                                className="text-xs px-2 py-1 rounded border border-slate-200 bg-slate-50 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed"
+                                                title="Ưu tiên thấp hơn"
+                                            >
+                                                ▼
+                                            </button>
+                                        </div>
+                                    </div>
+                                );
+                            })}
                         </div>
                     </div>
                 </div>
@@ -2267,6 +2400,21 @@ export default function StoryFetcher() {
                                    </span>
                                </div>
                            )}
+
+                           <div className="mt-3 flex items-center justify-between gap-3 p-3 bg-white border border-slate-200 rounded-xl">
+                               <div className="min-w-0">
+                                   <div className="text-xs font-bold text-slate-700">Ngăn cách khi ghép TXT</div>
+                                   <div className="text-[11px] text-slate-500">Mặc định: không dùng dấu =====</div>
+                               </div>
+                               <select
+                                   value={exportTxtSeparatorStyle}
+                                   onChange={(e) => setExportTxtSeparatorStyle(e.target.value as 'blank' | 'line')}
+                                   className="text-xs px-3 py-2 border border-slate-300 rounded-lg bg-white focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400"
+                               >
+                                   <option value="blank">Dòng trống</option>
+                                   <option value="line">Dấu =====</option>
+                               </select>
+                           </div>
                        </div>
                    )}
                    
