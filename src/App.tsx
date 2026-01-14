@@ -51,6 +51,7 @@ export default function StoryFetcher() {
   const [chatgptKeys, setChatgptKeys] = useState<string[]>(['', '', '']);
   const [groqKeys, setGroqKeys] = useState<string[]>(['', '', '']);
   const [deepseekKeys, setDeepseekKeys] = useState<string[]>(['', '', '']);
+  const [qwenKeys, setQwenKeys] = useState<string[]>(['', '', '']);
   const [showApiKeyInput, setShowApiKeyInput] = useState(false);
   
   // --- AUTO & TIMER & COUNTER STATES ---
@@ -763,9 +764,10 @@ export default function StoryFetcher() {
       const validChatgptKeys = chatgptKeys.filter(k => k && k.trim().length > 0);
       const validGroqKeys = groqKeys.filter(k => k && k.trim().length > 0);
       const validDeepseekKeys = deepseekKeys.filter(k => k && k.trim().length > 0);
+      const validQwenKeys = qwenKeys.filter(k => k && k.trim().length > 0);
       
-      if (validGeminiKeys.length === 0 && validChatgptKeys.length === 0 && validGroqKeys.length === 0 && validDeepseekKeys.length === 0) {
-          throw new Error("Cần nhập ít nhất 1 API Key (Gemini/ChatGPT/Groq/DeepSeek).");
+      if (validGeminiKeys.length === 0 && validChatgptKeys.length === 0 && validGroqKeys.length === 0 && validDeepseekKeys.length === 0 && validQwenKeys.length === 0) {
+          throw new Error("Cần nhập ít nhất 1 API Key (Gemini/Groq/Qwen/DeepSeek/ChatGPT).");
       }
       
       // Sử dụng styleOverride nếu có, nếu không thì dùng autoTranslationStyle hoặc translationStyle
@@ -804,6 +806,16 @@ export default function StoryFetcher() {
       // Danh sách DeepSeek models - FREE, context 64k
       const deepseekModels = [
           'deepseek-chat'  // DeepSeek Chat - FREE unlimited
+      ];
+      
+      // Danh sách Qwen models (Alibaba Cloud) - FREE, XUẤT SẮC VỚI TIẾNG TRUNG
+      // qwen-turbo: Nhanh, tốt cho dịch thường
+      // qwen-plus: Chất lượng cao hơn
+      // qwen-max: Tốt nhất, context 30k
+      const qwenModels = [
+          'qwen-turbo',   // Nhanh, FREE
+          'qwen-plus',    // Chất lượng cao
+          'qwen-max'      // Xuất sắc nhất
       ];
       
       let lastError;
@@ -911,7 +923,59 @@ export default function StoryFetcher() {
         }
       }
       
-      // Nếu Gemini và Groq thất bại, thử DeepSeek (FREE unlimited)
+      // Nếu Gemini và Groq thất bại, thử Qwen (FREE, tốt cho tiếng Trung)
+      for (const key of validQwenKeys) {
+        for (const model of qwenModels) {
+            try {
+                const response = await fetch('https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${key}`
+                    },
+                    body: JSON.stringify({
+                        model: model,
+                        messages: [
+                            {
+                                role: 'system',
+                                content: styleToUse === 'ancient'
+                                    ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
+                                    : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
+                            },
+                            { role: 'user', content: text }
+                        ],
+                        temperature: 0.3
+                    })
+                });
+                
+                if (response.status === 429) {
+                    console.warn(`Qwen ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
+                    continue;
+                }
+                
+                if (!response.ok) {
+                    console.warn(`Qwen ${model} lỗi ${response.status}, thử model khác...`);
+                    continue;
+                }
+                
+                const result = await response.json();
+                let translatedText = result.choices?.[0]?.message?.content;
+                
+                if (translatedText) {
+                    console.log(`✅ Dịch thành công với Qwen ${model} và key ...${key.slice(-4)}`);
+                    return translatedText
+                        .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
+                        .replace(/\*\*/g, '')
+                        .trim() + '\n\n=-=';
+                }
+            } catch (e: any) {
+                lastError = e;
+                console.warn(`Qwen ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
+            }
+        }
+      }
+      
+      // Nếu Gemini, Groq và Qwen thất bại, thử DeepSeek (FREE unlimited)
       for (const key of validDeepseekKeys) {
         for (const model of deepseekModels) {
             try {
@@ -1019,7 +1083,7 @@ export default function StoryFetcher() {
         }
       }
       
-      throw lastError || new Error("Tất cả API Key (Gemini/Groq/DeepSeek/ChatGPT) và models đều lỗi hoặc hết hạn mức.");
+      throw lastError || new Error("Tất cả API Key (Gemini/Groq/Qwen/DeepSeek/ChatGPT) và models đều lỗi hoặc hết hạn mức.");
   };
 
   // --- PRELOAD LOGIC ---
@@ -1266,7 +1330,7 @@ export default function StoryFetcher() {
                 <p className="text-[10px] text-indigo-200 opacity-80">Convert hán việt sang thuần việt</p>
              </div>
              <div className="flex gap-2">
-                <button onClick={() => setShowApiKeyInput(!showApiKeyInput)} className={`p-2 rounded-full transition-colors text-white ${(apiKeys.some(k => k) || chatgptKeys.some(k => k) || groqKeys.some(k => k) || deepseekKeys.some(k => k)) ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100' : 'bg-red-500/20 hover:bg-red-500/30 text-red-100 animate-pulse'}`} title="API Key"><Key size={18}/></button>
+                <button onClick={() => setShowApiKeyInput(!showApiKeyInput)} className={`p-2 rounded-full transition-colors text-white ${(apiKeys.some(k => k) || chatgptKeys.some(k => k) || groqKeys.some(k => k) || deepseekKeys.some(k => k) || qwenKeys.some(k => k)) ? 'bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-100' : 'bg-red-500/20 hover:bg-red-500/30 text-red-100 animate-pulse'}`} title="API Key"><Key size={18}/></button>
              </div>
           </div>
 
@@ -1316,6 +1380,36 @@ export default function StoryFetcher() {
                                         const newKeys = [...groqKeys];
                                         newKeys[i] = '';
                                         setGroqKeys(newKeys);
+                                    }} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    
+                    {/* Qwen Keys */}
+                    <div>
+                        <div className="flex justify-between mb-2">
+                            <span className="text-xs font-bold text-orange-800 uppercase">🇨🇳 Qwen API Keys (Alibaba - FREE)</span>
+                        </div>
+                        <div className="space-y-2">
+                            {qwenKeys.map((k, i) => (
+                                <div key={i} className="relative flex items-center">
+                                    <span className="absolute left-2 text-[10px] font-bold text-slate-400">#{i+1}</span>
+                                    <input 
+                                        type="password" 
+                                        value={k} 
+                                        onChange={(e) => {
+                                            const newKeys = [...qwenKeys];
+                                            newKeys[i] = e.target.value;
+                                            setQwenKeys(newKeys);
+                                        }} 
+                                        className="w-full pl-8 pr-8 py-2 text-xs border border-orange-300 rounded focus:border-orange-500 focus:ring-1 focus:ring-orange-500 bg-white" 
+                                        placeholder="Qwen API Key (sk-...)..."
+                                    />
+                                    {k && <button onClick={() => {
+                                        const newKeys = [...qwenKeys];
+                                        newKeys[i] = '';
+                                        setQwenKeys(newKeys);
                                     }} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
                                 </div>
                             ))}
