@@ -75,6 +75,7 @@ export default function StoryFetcher() {
   const [batchProgress, setBatchProgress] = useState<{current: number, total: number, currentUrl: string}>({current: 0, total: 0, currentUrl: ''});
   const [showBatchPanel, setShowBatchPanel] = useState(false);
   const [batchStartUrl, setBatchStartUrl] = useState<string>(''); // URL to start batch translation from
+  const [batchTranslationStyle, setBatchTranslationStyle] = useState<'modern' | 'ancient'>('ancient');
   
   // --- CACHE STATE ---
   const [translatedChapters, setTranslatedChapters] = useState<any[]>([]);
@@ -158,6 +159,7 @@ export default function StoryFetcher() {
 
       let currentUrl = startUrl;
       let translated = 0;
+      const newChapters: any[] = []; // Collect new chapters to save all at once
 
       for (let i = 0; i < count; i++) {
           if (batchTranslationRef.current.shouldStop) {
@@ -171,8 +173,11 @@ export default function StoryFetcher() {
           }
 
           try {
-              // Check cache first
-              const cached = translatedChapters.find(c => c.url === currentUrl);
+              // Check cache first (in both state and newChapters array)
+              const existingCache = translatedChapters.find(c => c.url === currentUrl);
+              const newCache = newChapters.find(c => c.url === currentUrl);
+              const cached = existingCache || newCache;
+              
               if (cached) {
                   console.log(`Chapter ${i + 1} already cached: ${cached.title}`);
                   
@@ -197,11 +202,33 @@ export default function StoryFetcher() {
               const data = await fetchRawStoryData(currentUrl);
               
               // Translate
-              const translatedText = await fetchTranslation(data.content);
+              const translatedText = await fetchTranslation(data.content, batchTranslationStyle);
               
-              // Save to cache
-              const styleToUse = translationStyle;
-              saveToCache(currentUrl, data.content, translatedText, data.nextUrl, data.prevUrl, styleToUse);
+              // Prepare chapter data
+              let title = "Chương không tên";
+              const lines = translatedText.split('\n');
+              if (lines.length > 0) title = lines[0].substring(0, 50);
+              
+              let webName = "Không rõ";
+              try {
+                  const urlObj = new URL(currentUrl);
+                  webName = urlObj.hostname.replace('www.', '');
+              } catch {}
+              
+              const newItem = { 
+                  url: currentUrl, 
+                  title, 
+                  content: data.content, 
+                  translatedContent: translatedText, 
+                  nextUrl: data.nextUrl, 
+                  prevUrl: data.prevUrl, 
+                  timestamp: Date.now(), 
+                  translationType: batchTranslationStyle, 
+                  webName 
+              };
+              
+              // Add to collection
+              newChapters.push(newItem);
               
               translated++;
               
@@ -222,6 +249,14 @@ export default function StoryFetcher() {
               setError(`Lỗi tại chương ${i + 1}: ${err.message || 'Không rõ'}. Đã dịch được ${translated} chương.`);
               break;
           }
+      }
+
+      // Save all new chapters to cache at once
+      if (newChapters.length > 0) {
+          const updatedCache = [...newChapters, ...translatedChapters.filter(c => !newChapters.some(nc => nc.url === c.url))].slice(0, 500);
+          setTranslatedChapters(updatedCache);
+          localStorage.setItem('reader_translated_cache', JSON.stringify(updatedCache));
+          console.log(`Saved ${newChapters.length} new chapters to cache`);
       }
 
       setIsBatchTranslating(false);
@@ -336,7 +371,7 @@ export default function StoryFetcher() {
       const newItem = { url, title, content, translatedContent, nextUrl, prevUrl, timestamp: Date.now(), translationType: translationType || translationStyle, webName };
       
       // Update cache: remove old entry for same URL, add new to top
-      const newCache = [newItem, ...translatedChapters.filter(c => c.url !== url)].slice(0, 20); // Limit to 20 chapters to save space
+      const newCache = [newItem, ...translatedChapters.filter(c => c.url !== url)].slice(0, 500); // Limit to 500 chapters
       setTranslatedChapters(newCache);
       localStorage.setItem('reader_translated_cache', JSON.stringify(newCache));
   };
@@ -656,13 +691,13 @@ export default function StoryFetcher() {
       return { content: fullContent, nextUrl, prevUrl };
   };
 
-  const fetchTranslation = async (text: string) => {
+  const fetchTranslation = async (text: string, styleOverride?: 'modern' | 'ancient') => {
       // GEMINI LOGIC
       const validKeys = apiKeys.filter(k => k && k.trim().length > 0);
       if (validKeys.length === 0) throw new Error("Cần nhập ít nhất 1 API Key.");
       
-      // Sử dụng autoTranslationStyle nếu đang ở chế độ auto, nếu không thì dùng translationStyle hiện tại
-      const styleToUse = isAutoMode && autoTranslationStyle ? autoTranslationStyle : translationStyle;
+      // Sử dụng styleOverride nếu có, nếu không thì dùng autoTranslationStyle hoặc translationStyle
+      const styleToUse = styleOverride || (isAutoMode && autoTranslationStyle ? autoTranslationStyle : translationStyle);
       
       let lastError;
       const promptText = styleToUse === 'ancient' 
@@ -1359,19 +1394,46 @@ export default function StoryFetcher() {
                                />
                            </div>
                            <div>
-                               <label className="block text-sm font-bold text-slate-700 mb-2">Số chương cần dịch: {batchChapterCount}</label>
+                               <label className="block text-sm font-bold text-slate-700 mb-2">Số chương cần dịch</label>
                                <input 
-                                   type="range" 
+                                   type="number" 
                                    min="1" 
                                    max="500" 
                                    value={batchChapterCount}
-                                   onChange={(e) => setBatchChapterCount(Number(e.target.value))}
-                                   className="w-full"
+                                   onChange={(e) => setBatchChapterCount(Math.max(1, Math.min(500, Number(e.target.value))))}
+                                   placeholder="Nhập số chương (1-500)"
+                                   className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm"
                                    disabled={isBatchTranslating}
                                />
-                               <div className="flex justify-between text-xs text-slate-400 mt-1">
-                                   <span>1</span>
-                                   <span>500</span>
+                               <div className="text-xs text-slate-400 mt-1">
+                                   Tối thiểu 1, tối đa 500 chương
+                               </div>
+                           </div>
+                           <div>
+                               <label className="block text-sm font-bold text-slate-700 mb-2">Thể loại dịch</label>
+                               <div className="flex gap-2">
+                                   <button
+                                       onClick={() => setBatchTranslationStyle('ancient')}
+                                       disabled={isBatchTranslating}
+                                       className={`flex-1 py-2 px-4 rounded-lg font-bold text-sm transition-colors ${
+                                           batchTranslationStyle === 'ancient'
+                                               ? 'bg-amber-500 text-white'
+                                               : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                       } disabled:opacity-50`}
+                                   >
+                                       🏛️ Cổ Trang
+                                   </button>
+                                   <button
+                                       onClick={() => setBatchTranslationStyle('modern')}
+                                       disabled={isBatchTranslating}
+                                       className={`flex-1 py-2 px-4 rounded-lg font-bold text-sm transition-colors ${
+                                           batchTranslationStyle === 'modern'
+                                               ? 'bg-purple-500 text-white'
+                                               : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                                       } disabled:opacity-50`}
+                                   >
+                                       🏙️ Hiện Đại
+                                   </button>
                                </div>
                            </div>
                        </div>
