@@ -623,12 +623,14 @@ export default function StoryFetcher() {
               .sort((a, b) => a.timestamp - b.timestamp); // Tải trước (timestamp nhỏ) ở trên, tải sau ở dưới
           
           contentToExport = chaptersToExport.map((chapter, index) => {
+              // Loại bỏ dấu =-= ở cuối mỗi chương trước khi ghép
+              const cleanContent = chapter.translatedContent.replace(/\n\n=-=\s*$/, '').trim();
               const separator = index > 0
                   ? (exportTxtSeparatorStyle === 'line'
                       ? '\n\n' + '='.repeat(50) + '\n\n'
-                      : '')
+                      : '\n\n=-=\n\n')  // Dùng =-= làm separator nhẹ khi chọn "Không ngăn cách"
                   : '';
-              return separator + chapter.translatedContent;
+              return separator + cleanContent;
           }).join('');
       } else if (translatedContent) {
           // Xuất chương hiện tại
@@ -663,8 +665,9 @@ export default function StoryFetcher() {
               .sort((a, b) => a.timestamp - b.timestamp); // Tải trước (timestamp nhỏ) ở trên
           
           contentToExport = chaptersToExport.map((chapter, index) => {
+              const cleanContent = chapter.translatedContent.replace(/\n\n=-=\s*$/, '').trim();
               const separator = index > 0 ? '<div style="page-break-before: always;"></div>' : '';
-              const paragraphs = chapter.translatedContent.split('\n\n').map((p: string) => `<p>${p}</p>`).join('');
+              const paragraphs = cleanContent.split('\n\n').map((p: string) => `<p>${p}</p>`).join('');
               return separator + paragraphs;
           }).join('');
       } else if (translatedContent) {
