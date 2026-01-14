@@ -825,12 +825,10 @@ export default function StoryFetcher() {
       
       // Danh sách Groq models - FREE, NHANH NHẤT (500+ tokens/s)
       // llama-3.3-70b: Mới nhất, chất lượng tốt
-      // llama-3.1-70b: Ổn định
-      // mixtral-8x7b: Context 32k
+      // llama-3.1-8b: Nhẹ, ổn định, dễ được cấp quyền hơn
       const groqModels = [
           'llama-3.3-70b-versatile',  // LLaMA 3.3 70B - mới nhất
-          'llama-3.1-70b-versatile',  // LLaMA 3.1 70B - ổn định
-          'mixtral-8x7b-32768'        // Mixtral 8x7B - context lớn
+          'llama-3.1-8b-instant'      // LLaMA 3.1 8B - fallback ổn định
       ];
       
       // Danh sách DeepSeek models - FREE, context 64k
@@ -922,7 +920,9 @@ export default function StoryFetcher() {
                             { role: 'user', content: text }
                         ],
                         temperature: 0.3,
-                        max_tokens: 4000
+                        // Một số model/Groq account trả 400 nếu max_tokens quá cao hoặc context quá dài.
+                        // Giữ thấp để tăng tỷ lệ thành công khi dịch chương dài.
+                        max_tokens: 2048
                     })
                 });
                 
@@ -932,7 +932,15 @@ export default function StoryFetcher() {
                 }
                 
                 if (!response.ok) {
-                    console.warn(`Groq ${model} lỗi ${response.status}, thử model khác...`);
+                    let details = '';
+                    try {
+                        const json = await response.json();
+                        details = (json?.error?.message || json?.message || JSON.stringify(json)).toString();
+                    } catch {
+                        try { details = await response.text(); } catch {}
+                    }
+                    const trimmed = details ? details.slice(0, 300) : '';
+                    console.warn(`Groq ${model} lỗi ${response.status}${trimmed ? `: ${trimmed}` : ''}, thử model khác...`);
                     continue;
                 }
                 
