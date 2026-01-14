@@ -1428,19 +1428,11 @@ export default function StoryFetcher() {
                                     <input 
                                         type="password" 
                                         value={k} 
-                                        onChange={(e) => {
-                                            const newKeys = [...groqKeys];
-                                            newKeys[i] = e.target.value;
-                                            setGroqKeys(newKeys);
-                                        }} 
+                                        onChange={(e) => updateGroqKey(i, e.target.value)} 
                                         className="w-full pl-8 pr-8 py-2 text-xs border border-blue-300 rounded focus:border-blue-500 focus:ring-1 focus:ring-blue-500 bg-white" 
                                         placeholder="Groq API Key (gsk_...)..."
                                     />
-                                    {k && <button onClick={() => {
-                                        const newKeys = [...groqKeys];
-                                        newKeys[i] = '';
-                                        setGroqKeys(newKeys);
-                                    }} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
+                                    {k && <button onClick={() => updateGroqKey(i, '')} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
                                 </div>
                             ))}
                         </div>
@@ -1458,19 +1450,11 @@ export default function StoryFetcher() {
                                     <input 
                                         type="password" 
                                         value={k} 
-                                        onChange={(e) => {
-                                            const newKeys = [...qwenKeys];
-                                            newKeys[i] = e.target.value;
-                                            setQwenKeys(newKeys);
-                                        }} 
+                                        onChange={(e) => updateQwenKey(i, e.target.value)} 
                                         className="w-full pl-8 pr-8 py-2 text-xs border border-orange-300 rounded focus:border-orange-500 focus:ring-1 focus:ring-orange-500 bg-white" 
                                         placeholder="Qwen API Key (sk-...)..."
                                     />
-                                    {k && <button onClick={() => {
-                                        const newKeys = [...qwenKeys];
-                                        newKeys[i] = '';
-                                        setQwenKeys(newKeys);
-                                    }} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
+                                    {k && <button onClick={() => updateQwenKey(i, '')} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
                                 </div>
                             ))}
                         </div>
@@ -1488,19 +1472,11 @@ export default function StoryFetcher() {
                                     <input 
                                         type="password" 
                                         value={k} 
-                                        onChange={(e) => {
-                                            const newKeys = [...deepseekKeys];
-                                            newKeys[i] = e.target.value;
-                                            setDeepseekKeys(newKeys);
-                                        }} 
+                                        onChange={(e) => updateDeepseekKey(i, e.target.value)} 
                                         className="w-full pl-8 pr-8 py-2 text-xs border border-purple-300 rounded focus:border-purple-500 focus:ring-1 focus:ring-purple-500 bg-white" 
                                         placeholder="DeepSeek API Key (sk-...)..."
                                     />
-                                    {k && <button onClick={() => {
-                                        const newKeys = [...deepseekKeys];
-                                        newKeys[i] = '';
-                                        setDeepseekKeys(newKeys);
-                                    }} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
+                                    {k && <button onClick={() => updateDeepseekKey(i, '')} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
                                 </div>
                             ))}
                         </div>
@@ -1518,19 +1494,11 @@ export default function StoryFetcher() {
                                     <input 
                                         type="password" 
                                         value={k} 
-                                        onChange={(e) => {
-                                            const newKeys = [...chatgptKeys];
-                                            newKeys[i] = e.target.value;
-                                            setChatgptKeys(newKeys);
-                                        }} 
+                                        onChange={(e) => updateChatgptKey(i, e.target.value)} 
                                         className="w-full pl-8 pr-8 py-2 text-xs border border-green-300 rounded focus:border-green-500 focus:ring-1 focus:ring-green-500 bg-white" 
                                         placeholder="ChatGPT API Key (sk-...)..."
                                     />
-                                    {k && <button onClick={() => {
-                                        const newKeys = [...chatgptKeys];
-                                        newKeys[i] = '';
-                                        setChatgptKeys(newKeys);
-                                    }} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
+                                    {k && <button onClick={() => updateChatgptKey(i, '')} className="absolute right-2 text-slate-400 hover:text-red-500"><Trash2 size={12}/></button>}
                                 </div>
                             ))}
                         </div>
