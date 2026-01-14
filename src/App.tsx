@@ -862,13 +862,15 @@ export default function StoryFetcher() {
       const styleToUse = styleOverride || (isAutoMode && autoTranslationStyle ? autoTranslationStyle : translationStyle);
       
       // Danh sách Gemini models theo thứ tự ưu tiên
-      // Gemini 1.5 Flash: FREE 1M token/phút, context 1M tokens - TỐT NHẤT cho truyện dài
-      // Gemini 2.0 Flash: FREE nhưng giới hạn thấp hơn
-      // Gemini 1.5 Pro: Context 2M tokens, FREE 2 RPM - dự phòng
+      // NOTE: Danh sách này bám theo list models thực tế mà bạn cung cấp.
+      // Yêu cầu: KHÔNG dùng Pro.
       const geminiModels = [
-          'gemini-1.5-flash-latest',        // Gemini 1.5 Flash - ƯU TIÊN cho free tier
-          'gemini-2.0-flash-exp',           // Gemini 2.0 Flash Experimental
-          'gemini-1.5-pro-latest'           // Gemini 1.5 Pro - context lớn nhất
+          'gemini-2.5-flash',
+          'gemini-2.5-flash-lite',
+          'gemini-2.0-flash',
+          'gemini-2.0-flash-001',
+          'gemini-2.0-flash-lite',
+          'gemini-2.0-flash-lite-001'
       ];
       
       // Danh sách ChatGPT models - TẤT CẢ ĐỀU TÍNH PHÍ
@@ -885,8 +887,14 @@ export default function StoryFetcher() {
       // llama-3.3-70b: Mới nhất, chất lượng tốt
       // llama-3.1-8b: Nhẹ, ổn định, dễ được cấp quyền hơn
       const groqModels = [
-          'llama-3.3-70b-versatile',  // LLaMA 3.3 70B - mới nhất
-          'llama-3.1-8b-instant'      // LLaMA 3.1 8B - fallback ổn định
+          // Ưu tiên model chất lượng (dịch/viết lại) tốt hơn; bỏ qua các model guard/whisper.
+          'qwen/qwen3-32b',
+          'llama-3.3-70b-versatile',
+          'moonshotai/kimi-k2-instruct',
+          'openai/gpt-oss-20b',
+          'meta-llama/llama-4-maverick-17b-128e-instruct',
+          'meta-llama/llama-4-scout-17b-16e-instruct',
+          'llama-3.1-8b-instant'
       ];
       
       // Danh sách DeepSeek models - FREE, context 64k
@@ -912,6 +920,14 @@ export default function StoryFetcher() {
               .replace(/\*\*/g, '')
               .trim() + '\n\n=-=';
       };
+
+      const callGemini = async (apiVersion: 'v1beta' | 'v1', model: string, key: string) => {
+          return fetch(`https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${key}`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ contents: [{ parts: [{ text: promptText + text }] }] })
+          });
+      };
       const promptText = styleToUse === 'ancient' 
         ? `Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Hãy viết lại đoạn convert Hán Việt sau sang tiếng Việt mượt mà theo phong cách cổ trang nhưng DỄ ĐỌC, câu chữ rõ ràng, tự nhiên.
 
@@ -929,10 +945,12 @@ export default function StoryFetcher() {
           for (const key of validGeminiKeys) {
               for (const model of geminiModels) {
                   try {
-                      const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
-                          method: 'POST', headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({ contents: [{ parts: [{ text: promptText + text }] }] })
-                      });
+                      let response = await callGemini('v1beta', model, key);
+
+                      // Một số thời điểm Google đổi/ẩn models theo phiên bản API -> thử fallback sang v1 nếu v1beta trả 404.
+                      if (response.status === 404) {
+                          response = await callGemini('v1', model, key);
+                      }
 
                       if (response.status === 429) {
                           console.warn(`Model ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
@@ -940,7 +958,11 @@ export default function StoryFetcher() {
                       }
 
                       if (!response.ok) {
-                          console.warn(`Model ${model} lỗi ${response.status}, thử model khác...`);
+                          if (response.status === 404) {
+                              console.warn(`Gemini model ${model} không tồn tại/không hỗ trợ (404), thử model khác...`);
+                          } else {
+                              console.warn(`Model ${model} lỗi ${response.status}, thử model khác...`);
+                          }
                           continue;
                       }
 
@@ -980,10 +1002,10 @@ export default function StoryFetcher() {
                                           ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
                                           : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
                                   },
-                                  { role: 'user', content: text }
+                                  { role: 'user', content: promptText + text }
                               ],
-                              temperature: 0.3,
-                              max_tokens: 2048
+                              temperature: 0.25,
+                              max_tokens: 3072
                           })
                       });
 
@@ -1099,6 +1121,11 @@ export default function StoryFetcher() {
 
                       if (response.status === 429) {
                           console.warn(`DeepSeek ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`);
+                          continue;
+                      }
+
+                      if (response.status === 402) {
+                          console.warn(`DeepSeek ${model} trả 402 (cần billing/nạp tiền) với key ...${key.slice(-4)}; bỏ qua DeepSeek.`);
                           continue;
                       }
 
