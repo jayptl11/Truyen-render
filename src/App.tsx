@@ -253,10 +253,13 @@ export default function StoryFetcher() {
 
       // Save all new chapters to cache at once
       if (newChapters.length > 0) {
-          const updatedCache = [...newChapters, ...translatedChapters.filter(c => !newChapters.some(nc => nc.url === c.url))].slice(0, 500);
-          setTranslatedChapters(updatedCache);
-          localStorage.setItem('reader_translated_cache', JSON.stringify(updatedCache));
-          console.log(`Saved ${newChapters.length} new chapters to cache`);
+          // Use functional update to ensure we work with latest state
+          setTranslatedChapters(prev => {
+              const updatedCache = [...newChapters, ...prev.filter(c => !newChapters.some(nc => nc.url === c.url))].slice(0, 500);
+              localStorage.setItem('reader_translated_cache', JSON.stringify(updatedCache));
+              console.log(`Saved ${newChapters.length} new chapters to cache. Total: ${updatedCache.length}`);
+              return updatedCache;
+          });
       }
 
       setIsBatchTranslating(false);
@@ -1485,9 +1488,9 @@ export default function StoryFetcher() {
                                    Đã dịch ({translatedChapters.length} chương)
                                </h4>
                                <div className="space-y-2 max-h-60 overflow-y-auto">
-                                   {translatedChapters.slice(0, 10).map((chapter, idx) => (
+                                   {translatedChapters.slice(0, 10).map((chapter) => (
                                        <div 
-                                           key={idx}
+                                           key={chapter.url}
                                            onClick={() => {
                                                loadChapter(chapter.url);
                                                setShowBatchPanel(false);
