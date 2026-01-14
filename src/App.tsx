@@ -72,7 +72,7 @@ export default function StoryFetcher() {
   // --- BATCH TRANSLATION STATES ---
   const [batchChapterCount, setBatchChapterCount] = useState<number>(10);
   const [isBatchTranslating, setIsBatchTranslating] = useState(false);
-  const [batchProgress, setBatchProgress] = useState<{current: number, total: number, currentUrl: string}>({current: 0, total: 0, currentUrl: ''});
+  const [batchProgress, setBatchProgress] = useState<{current: number, total: number, currentUrl: string, error?: string}>({current: 0, total: 0, currentUrl: ''});
   const [showBatchPanel, setShowBatchPanel] = useState(false);
   const [batchStartUrl, setBatchStartUrl] = useState<string>(''); // URL to start batch translation from
   const [batchTranslationStyle, setBatchTranslationStyle] = useState<'modern' | 'ancient'>('ancient');
@@ -198,11 +198,44 @@ export default function StoryFetcher() {
               console.log(`Translating chapter ${i + 1}/${count}: ${currentUrl}`);
               setBatchProgress({current: translated, total: count, currentUrl});
 
-              // Fetch content
-              const data = await fetchRawStoryData(currentUrl);
+              // Fetch content with retry
+              let data;
+              let retryCount = 0;
+              const maxRetries = 3;
               
-              // Translate
-              const translatedText = await fetchTranslation(data.content, batchTranslationStyle);
+              while (retryCount < maxRetries) {
+                  try {
+                      data = await fetchRawStoryData(currentUrl);
+                      break; // Success, exit retry loop
+                  } catch (err: any) {
+                      retryCount++;
+                      if (retryCount >= maxRetries) throw err;
+                      console.log(`Retry ${retryCount}/${maxRetries} for fetching content...`);
+                      setBatchProgress({current: translated, total: count, currentUrl: `🔄 Thử lại lần ${retryCount}/${maxRetries}...`});
+                      await new Promise(resolve => setTimeout(resolve, 2000 * retryCount)); // Exponential backoff
+                  }
+              }
+              
+              if (!data) throw new Error('Không thể tải nội dung sau nhiều lần thử');
+              
+              // Translate with retry
+              let translatedText;
+              retryCount = 0;
+              
+              while (retryCount < maxRetries) {
+                  try {
+                      translatedText = await fetchTranslation(data.content, batchTranslationStyle);
+                      break; // Success, exit retry loop
+                  } catch (err: any) {
+                      retryCount++;
+                      if (retryCount >= maxRetries) throw err;
+                      console.log(`Retry ${retryCount}/${maxRetries} for translation...`);
+                      setBatchProgress({current: translated, total: count, currentUrl: `🔄 Thử dịch lại lần ${retryCount}/${maxRetries}...`});
+                      await new Promise(resolve => setTimeout(resolve, 2000 * retryCount)); // Exponential backoff
+                  }
+              }
+              
+              if (!translatedText) throw new Error('Không thể dịch sau nhiều lần thử');
               
               // Prepare chapter data
               let title = "Chương không tên";
@@ -246,7 +279,17 @@ export default function StoryFetcher() {
 
           } catch (err: any) {
               console.error(`Error translating chapter ${i + 1}:`, err);
-              setError(`Lỗi tại chương ${i + 1}: ${err.message || 'Không rõ'}. Đã dịch được ${translated} chương.`);
+              const errorMsg = err.message || 'Không rõ';
+              const detailedError = errorMsg.includes('429') 
+                  ? `API Key hết quota (429) tại chương ${i + 1}. Vui lòng thêm API Key khác hoặc chờ reset quota.`
+                  : errorMsg.includes('408') || errorMsg.includes('timeout')
+                  ? `Timeout khi tải chương ${i + 1}. Kết nối mạng chậm hoặc website không phản hồi.`
+                  : errorMsg.includes('Không tải được web')
+                  ? `Không thể tải nội dung chương ${i + 1}. Website có thể bị chặn hoặc URL không hợp lệ.`
+                  : `Lỗi tại chương ${i + 1}: ${errorMsg}`;
+              
+              setError(`❌ ${detailedError}\n\n✅ Đã dịch thành công: ${translated}/${count} chương.`);
+              setBatchProgress({current: translated, total: count, currentUrl: `LỖI: ${detailedError}`});
               break;
           }
       }
@@ -635,9 +678,27 @@ export default function StoryFetcher() {
   // --- HELPER FUNCTIONS FOR FETCHING ---
   const fetchRawStoryData = async (targetUrl: string) => {
       let rawHtml = '';
-      try { const r = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`); const d = await r.json(); if (d.contents) rawHtml = d.contents; } catch (e) { console.log("Proxy 1 fail"); }
-      if (!rawHtml || rawHtml.length < 100) { try { const r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`); rawHtml = await r.text(); } catch (e) { console.log("Proxy 2 fail"); } }
-      if (!rawHtml) throw new Error('Không tải được web.');
+      let lastError = '';
+      try { 
+          const r = await fetch(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`, { signal: AbortSignal.timeout(15000) }); 
+          if (!r.ok) lastError = `Proxy 1 lỗi: ${r.status}`;
+          const d = await r.json(); 
+          if (d.contents) rawHtml = d.contents; 
+      } catch (e: any) { 
+          lastError = `Proxy 1 lỗi: ${e.message}`;
+          console.log("Proxy 1 fail:", e.message); 
+      }
+      if (!rawHtml || rawHtml.length < 100) { 
+          try { 
+              const r = await fetch(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`, { signal: AbortSignal.timeout(15000) }); 
+              if (!r.ok) lastError += ` | Proxy 2 lỗi: ${r.status}`;
+              rawHtml = await r.text(); 
+          } catch (e: any) { 
+              lastError += ` | Proxy 2 lỗi: ${e.message}`;
+              console.log("Proxy 2 fail:", e.message); 
+          } 
+      }
+      if (!rawHtml) throw new Error(`Không tải được web. ${lastError}`);
 
       const parser = new DOMParser(); 
       const doc = parser.parseFromString(rawHtml, 'text/html');
@@ -702,6 +763,13 @@ export default function StoryFetcher() {
       // Sử dụng styleOverride nếu có, nếu không thì dùng autoTranslationStyle hoặc translationStyle
       const styleToUse = styleOverride || (isAutoMode && autoTranslationStyle ? autoTranslationStyle : translationStyle);
       
+      // Danh sách models theo thứ tự ưu tiên
+      const models = [
+          'gemini-2.0-flash-exp',           // Gemini 2.0 Flash (ưu tiên)
+          'gemini-1.5-flash',                // Gemini 1.5 Flash
+          'gemini-2.5-flash-preview-09-2025' // Gemini 2.5 Flash
+      ];
+      
       let lastError;
       const promptText = styleToUse === 'ancient' 
         ? `Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Hãy viết lại đoạn convert Hán Việt sau sang tiếng Việt mượt mà theo phong cách cổ trang nhưng DỄ ĐỌC, câu chữ rõ ràng, tự nhiên.
@@ -716,29 +784,44 @@ export default function StoryFetcher() {
     Văn bản cần viết lại:\n\n`
         : `Bạn là biên tập viên truyện hiện đại chuyên nghiệp. Hãy viết lại đoạn convert Hán Việt sau sang tiếng Việt hiện đại, văn phong tự nhiên, dễ hiểu, phù hợp với truyện đô thị/ngôn tình hiện đại (dùng anh/em/cậu/tớ tùy ngữ cảnh). Giữ nguyên cấu trúc đoạn văn, tuyệt đối không thêm lời dẫn:\n\n`;
 
+      // Thử tất cả models trước khi chuyển sang API key tiếp theo
       for (const key of validKeys) {
-        try {
-            const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${key}`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ contents: [{ parts: [{ text: promptText + text }] }] })
-            });
-            if (response.status === 429) { console.warn(`Key ...${key.slice(-4)} hết quota (429), thử key khác...`); continue; }
-            if (!response.ok) throw new Error(`Lỗi API: ${response.status}`);
-            const result = await response.json();
-            let translatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
-                        // Sanitize common markdown artifacts (e.g., **Chương ...**) to keep reading UI clean.
-                        return translatedText
-                            ? translatedText
-                                    .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
-                                    .replace(/\*\*/g, '')
-                                    .trim() + '\n\n=-='
-                            : "";
-        } catch (e: any) {
-            lastError = e;
-            if (e.message && e.message.includes('429')) continue;
+        for (const model of models) {
+            try {
+                const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`, {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ contents: [{ parts: [{ text: promptText + text }] }] })
+                });
+                
+                if (response.status === 429) { 
+                    console.warn(`Model ${model} với key ...${key.slice(-4)} hết quota (429), thử model khác...`); 
+                    continue; 
+                }
+                
+                if (!response.ok) {
+                    console.warn(`Model ${model} lỗi ${response.status}, thử model khác...`);
+                    continue;
+                }
+                
+                const result = await response.json();
+                let translatedText = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                
+                if (translatedText) {
+                    console.log(`✅ Dịch thành công với model ${model} và key ...${key.slice(-4)}`);
+                    // Sanitize common markdown artifacts (e.g., **Chương ...**) to keep reading UI clean.
+                    return translatedText
+                        .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
+                        .replace(/\*\*/g, '')
+                        .trim() + '\n\n=-=';
+                }
+            } catch (e: any) {
+                lastError = e;
+                console.warn(`Model ${model} với key ...${key.slice(-4)} lỗi: ${e.message}`);
+                if (e.message && e.message.includes('429')) continue;
+            }
         }
       }
-      throw lastError || new Error("Tất cả API Key đều lỗi hoặc hết hạn mức (429).");
+      throw lastError || new Error("Tất cả API Key và models đều lỗi hoặc hết hạn mức (429).");
   };
 
   // --- PRELOAD LOGIC ---
@@ -1463,19 +1546,37 @@ export default function StoryFetcher() {
 
                        {/* Progress display */}
                        {isBatchTranslating && batchProgress && (
-                           <div className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl p-4 border border-indigo-200">
+                           <div className={`rounded-xl p-4 border ${
+                               batchProgress.currentUrl.startsWith('LỖI:') 
+                                   ? 'bg-gradient-to-br from-red-50 to-orange-50 border-red-200'
+                                   : 'bg-gradient-to-br from-indigo-50 to-purple-50 border-indigo-200'
+                           }`}>
                                <div className="flex items-center justify-between mb-2">
-                                   <span className="text-sm font-bold text-slate-700">Đang xử lý...</span>
+                                   <span className={`text-sm font-bold ${
+                                       batchProgress.currentUrl.startsWith('LỖI:') ? 'text-red-700' : 'text-slate-700'
+                                   }`}>
+                                       {batchProgress.currentUrl.startsWith('LỖI:') ? '⚠️ Có lỗi xảy ra' : 'Đang xử lý...'}
+                                   </span>
                                    <span className="text-sm font-bold text-indigo-600">{batchProgress.current}/{batchProgress.total}</span>
                                </div>
                                <div className="w-full bg-slate-200 rounded-full h-2.5 mb-3">
                                    <div 
-                                       className="bg-gradient-to-r from-indigo-600 to-purple-600 h-2.5 rounded-full transition-all duration-300"
+                                       className={`h-2.5 rounded-full transition-all duration-300 ${
+                                           batchProgress.currentUrl.startsWith('LỖI:')
+                                               ? 'bg-gradient-to-r from-red-500 to-orange-500'
+                                               : 'bg-gradient-to-r from-indigo-600 to-purple-600'
+                                       }`}
                                        style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
                                    ></div>
                                </div>
                                <div className="text-xs text-slate-600 truncate">
-                                   <span className="font-semibold">URL hiện tại:</span> {batchProgress.currentUrl}
+                                   <span className="font-semibold">
+                                       {batchProgress.currentUrl.startsWith('LỖI:') ? '❌ ' : 'URL hiện tại: '}
+                                   </span> 
+                                   {batchProgress.currentUrl.startsWith('LỖI:') 
+                                       ? batchProgress.currentUrl.substring(5)
+                                       : batchProgress.currentUrl
+                                   }
                                </div>
                            </div>
                        )}
