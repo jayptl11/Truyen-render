@@ -106,21 +106,51 @@ export default function StoryFetcher() {
   
   useEffect(() => { autoModeRef.current = isAutoMode; }, [isAutoMode]);
 
+    const hasAnyTranslationKey = useCallback(() => {
+            const hasGemini = apiKeys.some(k => k && k.trim().length > 0);
+            const hasChatgpt = chatgptKeys.some(k => k && k.trim().length > 0);
+            const hasGroq = groqKeys.some(k => k && k.trim().length > 0);
+            const hasDeepseek = deepseekKeys.some(k => k && k.trim().length > 0);
+            const hasQwen = qwenKeys.some(k => k && k.trim().length > 0);
+            return hasGemini || hasChatgpt || hasGroq || hasDeepseek || hasQwen;
+    }, [apiKeys, chatgptKeys, groqKeys, deepseekKeys, qwenKeys]);
+
   // --- INIT ---
   useEffect(() => {
-    const savedKeys = localStorage.getItem('gemini_api_keys');
-    if (savedKeys) {
+    const loadThreeKeys = (storageKey: string): string[] => {
+        const saved = localStorage.getItem(storageKey);
+        if (!saved) return ['', '', ''];
         try {
-             const parsed = JSON.parse(savedKeys);
-             if (Array.isArray(parsed) && parsed.length === 3) setApiKeys(parsed);
-             else setApiKeys(['', '', '']);
-        } catch { setApiKeys(['', '', '']); }
-        setShowApiKeyInput(false);
-    } else {
-         const oldKey = localStorage.getItem('gemini_api_key');
-         if (oldKey) { setApiKeys([oldKey, '', '']); localStorage.setItem('gemini_api_keys', JSON.stringify([oldKey, '', ''])); }
-         else setShowApiKeyInput(true);
+            const parsed = JSON.parse(saved);
+            if (Array.isArray(parsed) && parsed.length === 3) return parsed as string[];
+        } catch {}
+        return ['', '', ''];
+    };
+
+    // Gemini (with legacy migration)
+    let loadedGeminiKeys = loadThreeKeys('gemini_api_keys');
+    if (loadedGeminiKeys.every(k => !k || !k.trim())) {
+        const oldKey = localStorage.getItem('gemini_api_key');
+        if (oldKey) {
+            loadedGeminiKeys = [oldKey, '', ''];
+            localStorage.setItem('gemini_api_keys', JSON.stringify(loadedGeminiKeys));
+        }
     }
+
+    const loadedGroqKeys = loadThreeKeys('groq_api_keys');
+    const loadedQwenKeys = loadThreeKeys('qwen_api_keys');
+    const loadedDeepseekKeys = loadThreeKeys('deepseek_api_keys');
+    const loadedChatgptKeys = loadThreeKeys('chatgpt_api_keys');
+
+    setApiKeys(loadedGeminiKeys);
+    setGroqKeys(loadedGroqKeys);
+    setQwenKeys(loadedQwenKeys);
+    setDeepseekKeys(loadedDeepseekKeys);
+    setChatgptKeys(loadedChatgptKeys);
+
+    const hasAny = [...loadedGeminiKeys, ...loadedGroqKeys, ...loadedQwenKeys, ...loadedDeepseekKeys, ...loadedChatgptKeys]
+        .some(k => k && k.trim().length > 0);
+    setShowApiKeyInput(!hasAny);
     
     // Load Settings
     const savedTheme = localStorage.getItem('reader_theme') as any;
@@ -150,8 +180,8 @@ export default function StoryFetcher() {
           return;
       }
 
-      if (apiKeys.filter(k => k.trim()).length === 0) {
-          setError('Cần nhập API Key trước khi dịch hàng loạt');
+      if (!hasAnyTranslationKey()) {
+          setError('Cần nhập ít nhất 1 API Key (Gemini/Groq/Qwen/DeepSeek/ChatGPT) trước khi dịch hàng loạt');
           setShowApiKeyInput(true);
           return;
       }
@@ -1223,6 +1253,34 @@ export default function StoryFetcher() {
       setApiKeys(newKeys);
       localStorage.setItem('gemini_api_keys', JSON.stringify(newKeys));
   };
+
+  const updateGroqKey = (index: number, val: string) => {
+      const newKeys = [...groqKeys];
+      newKeys[index] = val;
+      setGroqKeys(newKeys);
+      localStorage.setItem('groq_api_keys', JSON.stringify(newKeys));
+  };
+
+  const updateQwenKey = (index: number, val: string) => {
+      const newKeys = [...qwenKeys];
+      newKeys[index] = val;
+      setQwenKeys(newKeys);
+      localStorage.setItem('qwen_api_keys', JSON.stringify(newKeys));
+  };
+
+  const updateDeepseekKey = (index: number, val: string) => {
+      const newKeys = [...deepseekKeys];
+      newKeys[index] = val;
+      setDeepseekKeys(newKeys);
+      localStorage.setItem('deepseek_api_keys', JSON.stringify(newKeys));
+  };
+
+  const updateChatgptKey = (index: number, val: string) => {
+      const newKeys = [...chatgptKeys];
+      newKeys[index] = val;
+      setChatgptKeys(newKeys);
+      localStorage.setItem('chatgpt_api_keys', JSON.stringify(newKeys));
+  };
   
 
 
@@ -1246,8 +1304,10 @@ export default function StoryFetcher() {
   const translateContent = async () => {
     if (!content) return; 
     
-    if (apiKeys.filter(k => k.trim()).length === 0) {
-        setError('Cần nhập API Key.'); setShowApiKeyInput(true); return;
+    if (!hasAnyTranslationKey()) {
+        setError('Cần nhập ít nhất 1 API Key (Gemini/Groq/Qwen/DeepSeek/ChatGPT).');
+        setShowApiKeyInput(true);
+        return;
     }
 
     setTranslating(true); setError(''); setChunks([]); setAnalysisType(null);
