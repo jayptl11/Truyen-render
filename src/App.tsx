@@ -1,34 +1,8 @@
-import React, { useState, useEffect, useRef, memo, useCallback } from 'react';
-import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Play, Pause, Square, Edit3, Globe, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, CheckCircle2, History as HistoryIcon, Home, Palette, Clock, Sliders, Terminal, Bookmark, Download, Search as SearchIcon, Maximize2, BarChart3 } from 'lucide-react';
-import { EdgeSpeechService, EDGE_VOICES } from './services/edgeTTS';
+import { useState, useEffect, useRef, memo, useCallback } from 'react';
+import { Search, AlertCircle, BookOpen, ArrowRight, Sparkles, Key, RotateCw, Trash2, Edit3, Globe, FileText, HelpCircle, X, ChevronRight, ChevronLeft, Infinity as InfinityIcon, CheckCircle2, Layers, Home, Palette, Clock, Sliders, Terminal, Bookmark, Download, Search as SearchIcon, Maximize2, BarChart3 } from 'lucide-react';
 
 // --- SUB-COMPONENT: PARAGRAPH RENDERER ---
-const ParagraphItem = memo(({ text, isActive, activeCharIndex, onClick, index, setRef }: any) => {
-  const renderContent = () => {
-    if (!isActive || activeCharIndex === null || activeCharIndex < 0 || activeCharIndex >= text.length) {
-      return text;
-    }
-    const safeIndex = Math.min(activeCharIndex, text.length);
-    const before = text.slice(0, safeIndex);
-    const remaining = text.slice(safeIndex);
-    const match = remaining.match(/^(\S+)(\s*)/); 
-    
-    if (!match) return text;
-    
-    const word = match[1];
-    const space = match[2];
-    const after = remaining.slice(word.length + space.length);
-    
-    return (
-      <React.Fragment>
-        {before}
-        <span className="bg-orange-500 text-white rounded px-0.5 shadow-sm transition-colors duration-75">{word}</span>
-        {space}
-        {after}
-      </React.Fragment>
-    );
-  };
-
+const ParagraphItem = memo(({ text, onClick, index, setRef }: any) => {
   // Kiểu dáng đặc biệt cho tiêu đề chương (thường là đoạn đầu tiên)
   const isTitle = index === 0 && (text.toLowerCase().startsWith("chương") || text.length < 100);
 
@@ -38,15 +12,11 @@ const ParagraphItem = memo(({ text, isActive, activeCharIndex, onClick, index, s
         onClick={() => onClick(index)}
         className={`
             mb-3 md:mb-4 p-2 md:p-3 rounded-lg cursor-pointer border-l-4 transition-all duration-300 text-base md:text-lg leading-relaxed
-            ${isActive 
-                ? 'bg-amber-50 border-amber-500 shadow-md transform scale-[1.01]' 
-                : 'bg-transparent border-transparent hover:bg-slate-50 border-l-slate-200'
-            }
+            bg-transparent border-transparent hover:bg-slate-50 border-l-slate-200
             ${isTitle ? 'font-bold text-xl text-indigo-900 text-center py-4' : ''}
         `}
-        title="Bấm để đọc đoạn này"
     >
-        {renderContent()}
+        {text}
     </p>
   );
 });
@@ -59,8 +29,6 @@ export default function StoryFetcher() {
   const [translatedContent, setTranslatedContent] = useState('');
   
   const [chunks, setChunks] = useState<string[]>([]);
-  const [activeChunkIndex, setActiveChunkIndex] = useState<number | null>(null);
-  const [activeCharIndex, setActiveCharIndex] = useState<number | null>(null);
 
   const [nextChapterUrl, setNextChapterUrl] = useState<string | null>(null);
   const [prevChapterUrl, setPrevChapterUrl] = useState<string | null>(null);
@@ -71,7 +39,7 @@ export default function StoryFetcher() {
   const [step, setStep] = useState(1);
   const [inputMode, setInputMode] = useState<'url' | 'manual'>('url');
   const [translationStyle, setTranslationStyle] = useState<'modern' | 'ancient'>('ancient');
-  const [autoTranslationStyle, setAutoTranslationStyle] = useState<'modern' | 'ancient' | null>(null); // Giữ thể loại dịch khi auto
+  const [autoTranslationStyle, setAutoTranslationStyle] = useState<'modern' | 'ancient' | null>(null);
   
   const [mobileTab, setMobileTab] = useState<'input' | 'reader'>('input');
 
@@ -81,27 +49,12 @@ export default function StoryFetcher() {
   
   const [apiKeys, setApiKeys] = useState<string[]>(['', '', '']);
   const [showApiKeyInput, setShowApiKeyInput] = useState(false);
-
-  const [isSpeaking, setIsSpeaking] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
-  const [speechRate, setSpeechRate] = useState(1.0);
-  const [ttsChunkChars, setTtsChunkChars] = useState(650);
-    const [ttsMergeCount, setTtsMergeCount] = useState(3);
-    const [ttsMergeCountDraft, setTtsMergeCountDraft] = useState('3');
-    const [ttsMergeAll, setTtsMergeAll] = useState(true);
-  const [voices, setVoices] = useState<SpeechSynthesisVoice[]>([]);
-  const [selectedVoice, setSelectedVoice] = useState<SpeechSynthesisVoice | null>(null);
-  const [voiceDebugMsg, setVoiceDebugMsg] = useState('');
-  
-  // Edge TTS (Word-like smooth playback)
-  const [ttsEngine, setTtsEngine] = useState<'browser' | 'edge'>('browser'); // Default browser vì Edge bị block
-  const [edgeVoice, setEdgeVoice] = useState(EDGE_VOICES[0].name);
   
   // --- AUTO & TIMER & COUNTER STATES ---
   const [isAutoMode, setIsAutoMode] = useState(false);
   const [timeLeft, setTimeLeft] = useState<number | null>(null);
-  const [autoStopChapterLimit, setAutoStopChapterLimit] = useState<number>(0); // 0 = Unlimited
-  const [chaptersReadCount, setChaptersReadCount] = useState<number>(0); // Đếm số chương đã đọc trong phiên Auto
+  const [autoStopChapterLimit, setAutoStopChapterLimit] = useState<number>(0);
+  const [chaptersReadCount, setChaptersReadCount] = useState<number>(0);
   
   const [showMobileSettings, setShowMobileSettings] = useState(false);
   const [showConsole, setShowConsole] = useState(false);
@@ -114,12 +67,19 @@ export default function StoryFetcher() {
   // --- NEW FEATURES STATES ---
   const [theme, setTheme] = useState<'light' | 'dark' | 'sepia'>('light');
   const [fontSize, setFontSize] = useState(18);
-  const [history, setHistory] = useState<any[]>([]);
-  const [showHistory, setShowHistory] = useState(false);
   const [showAppearance, setShowAppearance] = useState(false);
+  
+  // --- BATCH TRANSLATION STATES ---
+  const [batchChapterCount, setBatchChapterCount] = useState<number>(10);
+  const [isBatchTranslating, setIsBatchTranslating] = useState(false);
+  const [batchProgress, setBatchProgress] = useState<{current: number, total: number, currentUrl: string}>({current: 0, total: 0, currentUrl: ''});
+  const [showBatchPanel, setShowBatchPanel] = useState(false);
+  const [batchStartUrl, setBatchStartUrl] = useState<string>(''); // URL to start batch translation from
+  
   // --- CACHE STATE ---
-  const [translatedChapters, setTranslatedChapters] = useState<any[]>([]); // New state for cache
-  const [showCache, setShowCache] = useState(false); // To show "Chương đã dịch" list
+  const [translatedChapters, setTranslatedChapters] = useState<any[]>([]);
+  const [showCache, setShowCache] = useState(false);
+  const batchTranslationRef = useRef<{shouldStop: boolean}>({shouldStop: false});
 
   // --- NEW FEATURES: BOOKMARK, EXPORT, SEARCH, ZEN, STATS ---
   const [bookmarks, setBookmarks] = useState<any[]>([]);
@@ -132,40 +92,14 @@ export default function StoryFetcher() {
   const [showStats, setShowStats] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [selectedChaptersForExport, setSelectedChaptersForExport] = useState<string[]>([]);
+  const [selectedChaptersForDelete, setSelectedChaptersForDelete] = useState<string[]>([]);
   const [chapterStartTime, setChapterStartTime] = useState<number | null>(null);
   
-  // Mini Player state
-  const [miniPlayerExpanded, setMiniPlayerExpanded] = useState(false);
-
-  // Edge TTS refs
-  const edgeServiceRef = useRef<EdgeSpeechService | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-  const audioCacheRef = useRef<Map<number, string>>(new Map());
-  const audioInFlightRef = useRef<Map<number, Promise<string>>>(new Map());
-  const playTokenRef = useRef(0);
-  
-  const activeUtterancesRef = useRef<Set<SpeechSynthesisUtterance>>(new Set());
-  const speechRef = useRef<SpeechSynthesisUtterance | null>(null);
-  const currentChunkIndexRef = useRef(0);
-  const lastSpeechEventAtRef = useRef<number>(0);
   const chunkRefs = useRef<(HTMLParagraphElement | null)[]>([]); 
   const containerRef = useRef<HTMLDivElement>(null); 
   const autoModeRef = useRef(isAutoMode);
   
   useEffect(() => { autoModeRef.current = isAutoMode; }, [isAutoMode]);
-
-  // Init Edge TTS
-  useEffect(() => {
-    if (!edgeServiceRef.current) {
-      edgeServiceRef.current = new EdgeSpeechService();
-    }
-    return () => {
-      // Cleanup audio cache
-      for (const url of audioCacheRef.current.values()) {
-        try { URL.revokeObjectURL(url); } catch {}
-      }
-    };
-  }, []);
 
   // --- INIT ---
   useEffect(() => {
@@ -183,42 +117,11 @@ export default function StoryFetcher() {
          else setShowApiKeyInput(true);
     }
     
-    // Load Settings & History
+    // Load Settings
     const savedTheme = localStorage.getItem('reader_theme') as any;
     if (savedTheme) setTheme(savedTheme);
     const savedSize = localStorage.getItem('reader_font_size');
     if (savedSize) setFontSize(parseInt(savedSize));
-    const savedChunkChars = localStorage.getItem('reader_tts_chunk_chars');
-    if (savedChunkChars) {
-        const n = parseInt(savedChunkChars);
-        if (!Number.isNaN(n)) setTtsChunkChars(Math.min(3000, Math.max(200, n)));
-    }
-
-    const savedMergeAll = localStorage.getItem('reader_tts_merge_all');
-    if (savedMergeAll) {
-        setTtsMergeAll(savedMergeAll === '1' || savedMergeAll === 'true');
-    }
-
-    const savedRate = localStorage.getItem('reader_speech_rate');
-    if (savedRate) {
-        const r = parseFloat(savedRate);
-        if (!Number.isNaN(r)) setSpeechRate(Math.min(2.0, Math.max(0.5, r)));
-    }
-    const savedMergeCount = localStorage.getItem('reader_tts_merge_count');
-    if (savedMergeCount) {
-        const n = parseInt(savedMergeCount);
-        if (!Number.isNaN(n)) {
-            const v = Math.min(100, Math.max(1, n));
-            setTtsMergeCount(v);
-            setTtsMergeCountDraft(String(v));
-        }
-    } else {
-        setTtsMergeCountDraft(String(ttsMergeCount));
-    }
-    const savedHistory = localStorage.getItem('reader_history');
-    if (savedHistory) {
-        try { setHistory(JSON.parse(savedHistory)); } catch {}
-    }
     const savedTranslated = localStorage.getItem('reader_translated_cache');
     if (savedTranslated) {
         try { setTranslatedChapters(JSON.parse(savedTranslated)); } catch {}
@@ -235,24 +138,101 @@ export default function StoryFetcher() {
     }
   }, []);
 
-      const clampMergeCount = useCallback((n: number) => {
-          if (!Number.isFinite(n)) return 1;
-          return Math.min(100, Math.max(1, Math.floor(n)));
-      }, []);
+  // --- BATCH TRANSLATION FUNCTIONS ---
+  const startBatchTranslation = async (startUrl: string, count: number) => {
+      if (!startUrl || count <= 0) {
+          setError('Vui lòng nhập URL và số chương hợp lệ');
+          return;
+      }
 
-  const saveToHistory = (url: string, contentSnippet: string) => {
-      if (!url) return;
-      // Extract title from content or url
-      let title = "Chương không tên";
-      const lines = contentSnippet.split('\n');
-      if (lines.length > 0) title = lines[0].substring(0, 50);
-      else title = url.split('/').pop() || "Link";
+      if (apiKeys.filter(k => k.trim()).length === 0) {
+          setError('Cần nhập API Key trước khi dịch hàng loạt');
+          setShowApiKeyInput(true);
+          return;
+      }
 
-      // History now just saves reading progress/link, not necessarily full content if we use cache
-      const newItem = { url, title, timestamp: Date.now() }; // Simplified history item
-      const newHistory = [newItem, ...history.filter(h => h.url !== url)].slice(0, 50); 
-      setHistory(newHistory);
-      localStorage.setItem('reader_history', JSON.stringify(newHistory));
+      setIsBatchTranslating(true);
+      batchTranslationRef.current.shouldStop = false;
+      setBatchProgress({current: 0, total: count, currentUrl: startUrl});
+      setShowBatchPanel(true);
+
+      let currentUrl = startUrl;
+      let translated = 0;
+
+      for (let i = 0; i < count; i++) {
+          if (batchTranslationRef.current.shouldStop) {
+              console.log('Batch translation stopped by user');
+              break;
+          }
+
+          if (!currentUrl) {
+              console.log('No more chapters to translate');
+              break;
+          }
+
+          try {
+              // Check cache first
+              const cached = translatedChapters.find(c => c.url === currentUrl);
+              if (cached) {
+                  console.log(`Chapter ${i + 1} already cached: ${cached.title}`);
+                  
+                  // Check if there's a next URL
+                  if (!cached.nextUrl) {
+                      console.log(`No more chapters after cached chapter ${i + 1}`);
+                      translated++;
+                      setBatchProgress({current: translated, total: count, currentUrl: currentUrl});
+                      break;
+                  }
+                  
+                  currentUrl = cached.nextUrl;
+                  translated++;
+                  setBatchProgress({current: translated, total: count, currentUrl: currentUrl});
+                  continue;
+              }
+
+              console.log(`Translating chapter ${i + 1}/${count}: ${currentUrl}`);
+              setBatchProgress({current: translated, total: count, currentUrl});
+
+              // Fetch content
+              const data = await fetchRawStoryData(currentUrl);
+              
+              // Translate
+              const translatedText = await fetchTranslation(data.content);
+              
+              // Save to cache
+              const styleToUse = translationStyle;
+              saveToCache(currentUrl, data.content, translatedText, data.nextUrl, data.prevUrl, styleToUse);
+              
+              translated++;
+              
+              // Check if there's a next URL
+              if (!data.nextUrl) {
+                  console.log(`No more chapters after chapter ${i + 1}`);
+                  break;
+              }
+              
+              currentUrl = data.nextUrl;
+              setBatchProgress({current: translated, total: count, currentUrl: currentUrl});
+
+              // Small delay to avoid overwhelming API
+              await new Promise(resolve => setTimeout(resolve, 500));
+
+          } catch (err: any) {
+              console.error(`Error translating chapter ${i + 1}:`, err);
+              setError(`Lỗi tại chương ${i + 1}: ${err.message || 'Không rõ'}. Đã dịch được ${translated} chương.`);
+              break;
+          }
+      }
+
+      setIsBatchTranslating(false);
+      if (translated > 0) {
+          setError(`✅ Hoàn tất! Đã dịch ${translated}/${count} chương.`);
+      }
+  };
+
+  const stopBatchTranslation = () => {
+      batchTranslationRef.current.shouldStop = true;
+      setIsBatchTranslating(false);
   };
   
   // Console log capture
@@ -382,7 +362,7 @@ export default function StoryFetcher() {
           const newBookmark = {
               url: currentUrl,
               title,
-              chunkIndex: activeChunkIndex || 0,
+              chunkIndex: 0, // No longer tracking chunk position for TTS
               timestamp: Date.now()
           };
           const newBookmarks = [newBookmark, ...bookmarks].slice(0, 20);
@@ -400,12 +380,6 @@ export default function StoryFetcher() {
   const loadBookmark = async (bookmark: any) => {
       await loadChapter(bookmark.url);
       setShowBookmarks(false);
-      setTimeout(() => {
-          if (bookmark.chunkIndex && chunkRefs.current[bookmark.chunkIndex]) {
-              chunkRefs.current[bookmark.chunkIndex]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-              currentChunkIndexRef.current = bookmark.chunkIndex;
-          }
-      }, 500);
   };
 
   // --- SEARCH FUNCTIONS ---
@@ -427,8 +401,6 @@ export default function StoryFetcher() {
   const jumpToSearchResult = (index: number) => {
       if (chunkRefs.current[index]) {
           chunkRefs.current[index]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          currentChunkIndexRef.current = index;
-          setActiveChunkIndex(index);
       }
   };
 
@@ -443,6 +415,28 @@ export default function StoryFetcher() {
 
   const selectAllChapters = () => {
       setSelectedChaptersForExport(translatedChapters.map(c => c.url));
+  };
+
+  // --- CACHE DELETE FUNCTIONS ---
+  const toggleChapterForDelete = (chapterUrl: string) => {
+      setSelectedChaptersForDelete(prev => 
+          prev.includes(chapterUrl) 
+              ? prev.filter(url => url !== chapterUrl)
+              : [...prev, chapterUrl]
+      );
+  };
+
+  const selectAllChaptersForDelete = () => {
+      setSelectedChaptersForDelete(translatedChapters.map(c => c.url));
+  };
+
+  const deleteSelectedChapters = () => {
+      if (selectedChaptersForDelete.length === 0) return;
+      
+      const updatedChapters = translatedChapters.filter(c => !selectedChaptersForDelete.includes(c.url));
+      setTranslatedChapters(updatedChapters);
+      localStorage.setItem('reader_translated_cache', JSON.stringify(updatedChapters));
+      setSelectedChaptersForDelete([]);
   };
 
   const exportToTxt = () => {
@@ -584,67 +578,15 @@ export default function StoryFetcher() {
       localStorage.setItem('reader_font_size', s.toString());
   };
 
-  // --- VOICE LOADING LOGIC ---
-  const loadVoices = useCallback(() => {
-    if (!window.speechSynthesis) {
-        setVoiceDebugMsg("Trình duyệt không hỗ trợ đọc.");
-        return;
-    }
-
-    const availableVoices = window.speechSynthesis.getVoices();
-    setVoices(availableVoices);
-    
-    const vnVoices = availableVoices.filter(v => 
-        v.lang.toLowerCase().includes('vi') || 
-        v.lang.toLowerCase().includes('vn') ||
-        v.name.toLowerCase().includes('vietnam')
-    );
-    
-    setVoiceDebugMsg(`Tìm thấy ${availableVoices.length} giọng (${vnVoices.length} tiếng Việt).`);
-
-    const hoaiMyVoice = vnVoices.find(v => v.name.includes('HoaiMy') || v.name.includes('Hoai My'));
-    const msFemale = vnVoices.find(v => v.name.includes('Microsoft') && (v.name.includes('Female') || v.name.includes('Nữ')));
-    const defaultVoice = hoaiMyVoice 
-                      || msFemale 
-                      || vnVoices.find(v => v.name.includes('Microsoft')) 
-                      || vnVoices.find(v => v.name.includes('Google')) 
-                      || vnVoices[0];
-    
-    if (!selectedVoice && defaultVoice) {
-        setSelectedVoice(defaultVoice);
-    } else if (selectedVoice && !availableVoices.find(v => v.name === selectedVoice.name)) {
-        if (defaultVoice) setSelectedVoice(defaultVoice);
-    }
-  }, [selectedVoice]);
-
-  const wakeUpSpeechEngine = () => {
-      if (!window.speechSynthesis) return;
-      const u = new SpeechSynthesisUtterance('');
-      u.volume = 0;
-      window.speechSynthesis.speak(u);
-      loadVoices();
-  };
-
-  useEffect(() => { 
-    loadVoices();
-    window.speechSynthesis.onvoiceschanged = loadVoices; 
-    const intervalId = setInterval(loadVoices, 500);
-    const timeoutId = setTimeout(() => clearInterval(intervalId), 3000);
-    wakeUpSpeechEngine();
-    return () => { 
-        window.speechSynthesis.cancel(); 
-        window.speechSynthesis.onvoiceschanged = null;
-        clearInterval(intervalId);
-        clearTimeout(timeoutId);
-    }; 
-  }, [loadVoices]);
+  // --- VOICE LOADING LOGIC REMOVED ---
+  // TTS functionality has been removed
 
   // Timer Logic
   useEffect(() => {
     let interval: ReturnType<typeof setInterval>;
     if (timeLeft !== null && timeLeft > 0) {
-      interval = setInterval(() => setTimeLeft(p => (p === null || p <= 1) ? (stopSpeech(), setIsAutoMode(false), null) : p - 1), 1000);
-    } else if (timeLeft === 0) { stopSpeech(); setIsAutoMode(false); setTimeLeft(null); }
+      interval = setInterval(() => setTimeLeft(p => (p === null || p <= 1) ? (setIsAutoMode(false), null) : p - 1), 1000);
+    } else if (timeLeft === 0) { setIsAutoMode(false); setTimeLeft(null); }
     return () => clearInterval(interval);
   }, [timeLeft]);
 
@@ -751,7 +693,7 @@ export default function StoryFetcher() {
                             ? translatedText
                                     .replace(/^(Đây là bản dịch|Dưới đây là|Bản dịch:).{0,50}\n/i, '')
                                     .replace(/\*\*/g, '')
-                                    .trim()
+                                    .trim() + '\n\n=-='
                             : "";
         } catch (e: any) {
             lastError = e;
@@ -812,136 +754,7 @@ export default function StoryFetcher() {
 
   // --- HANDLERS ---
   
-  const stopSpeech = useCallback(() => { 
-    // Stop browser TTS
-    window.speechSynthesis.cancel(); 
-    activeUtterancesRef.current.clear();
-    speechRef.current = null;
-    
-    // Stop Edge audio
-    playTokenRef.current++;
-    const audio = audioRef.current;
-    if (audio) {
-      try { audio.pause(); } catch {}
-      audio.currentTime = 0;
-      audio.src = '';
-    }
-    
-    setIsSpeaking(false); setIsPaused(false); setActiveChunkIndex(null); setActiveCharIndex(null); currentChunkIndexRef.current = 0;
-  }, []);
-
-    const buildTtsBatch = useCallback((startIndex: number) => {
-        const merge = ttsMergeAll ? Math.max(1, chunks.length - startIndex) : clampMergeCount(ttsMergeCount);
-        const indices: number[] = [];
-        const offsets: number[] = [];
-        let text = '';
-
-        for (let i = 0; i < merge; i++) {
-            const idx = startIndex + i;
-            if (idx >= chunks.length) break;
-            const part = chunks[idx];
-            indices.push(idx);
-            offsets.push(text.length);
-            text += part;
-            if (i < merge - 1 && idx + 1 < chunks.length) {
-                text += '\n\n';
-            }
-        }
-
-        return { text, indices, offsets, merge };
-    }, [chunks, ttsMergeAll, ttsMergeCount, clampMergeCount]);
-
-    // Edge TTS: Get or fetch audio URL for a batch starting at startIndex
-    const getEdgeAudio = useCallback(async (startIndex: number): Promise<string> => {
-        if (startIndex < 0 || startIndex >= chunks.length) throw new Error('Invalid index');
-    
-        const cached = audioCacheRef.current.get(startIndex);
-    if (cached) return cached;
-    
-        const inFlight = audioInFlightRef.current.get(startIndex);
-    if (inFlight) return await inFlight;
-    
-    const promise = (async () => {
-      if (!edgeServiceRef.current) edgeServiceRef.current = new EdgeSpeechService();
-            const { text } = buildTtsBatch(startIndex);
-      const { audioBlob } = await edgeServiceRef.current.synthesize(text, edgeVoice, speechRate);
-      const url = URL.createObjectURL(audioBlob);
-            audioCacheRef.current.set(startIndex, url);
-      return url;
-    })();
-    
-        audioInFlightRef.current.set(startIndex, promise);
-    try {
-      return await promise;
-    } finally {
-            audioInFlightRef.current.delete(startIndex);
-    }
-    }, [chunks.length, buildTtsBatch, edgeVoice, speechRate]);
-
-    // Edge TTS: Play specific batch
-    const playEdgeChunk = useCallback(async (startIndex: number, retryCount = 0) => {
-        const audio = audioRef.current;
-        if (!audio || startIndex < 0 || startIndex >= chunks.length) return;
-    
-    const token = playTokenRef.current;
-        setActiveChunkIndex(startIndex);
-    setActiveCharIndex(null);
-        currentChunkIndexRef.current = startIndex;
-    
-    try {
-            const url = await getEdgeAudio(startIndex);
-      if (playTokenRef.current !== token) return; // Cancelled
-      
-      audio.src = url;
-      await audio.play();
-      
-      // Prefetch next chunks (Word-like smooth buffering)
-            const step = ttsMergeAll ? Math.max(1, chunks.length - startIndex) : clampMergeCount(ttsMergeCount);
-            void getEdgeAudio(startIndex + step).catch(() => {});
-            void getEdgeAudio(startIndex + step * 2).catch(() => {});
-    } catch (e: any) {
-      console.error(`Edge TTS error (attempt ${retryCount + 1}/3):`, e);
-      
-      // Auto retry up to 3 times with exponential backoff
-      if (retryCount < 2 && isSpeaking && !isPaused && ttsEngine === 'edge') {
-        const delay = Math.min(1000 * Math.pow(2, retryCount), 4000); // 1s, 2s, 4s max
-                console.log(`[TTS Recovery] Retrying chunk ${startIndex} after ${delay}ms...`);
-        setTimeout(() => {
-          if (isSpeaking && !isPaused && ttsEngine === 'edge' && playTokenRef.current === token) {
-                        void playEdgeChunk(startIndex, retryCount + 1);
-          }
-        }, delay);
-      } else {
-        // Max retries reached, show error and stop
-        setVoiceDebugMsg(`Lỗi Edge TTS sau ${retryCount + 1} lần thử: ${e.message || 'Không rõ'}. Hãy thử chuyển về Browser TTS.`);
-        setIsSpeaking(false);
-        setIsPaused(false);
-      }
-    }
-    }, [chunks.length, getEdgeAudio, isSpeaking, isPaused, ttsEngine, ttsMergeCount, ttsMergeAll, clampMergeCount]);
-
-    // Edge TTS: Handle audio end -> next batch
-  const handleEdgeAudioEnded = useCallback(() => {
-    if (ttsEngine !== 'edge' || !isSpeaking || isPaused) return;
-    
-        const step = ttsMergeAll ? Math.max(1, chunks.length - currentChunkIndexRef.current) : clampMergeCount(ttsMergeCount);
-        const next = currentChunkIndexRef.current + step;
-    if (next >= chunks.length) {
-      // End of chapter
-      if (autoModeRef.current && nextChapterUrl) {
-        setTimeout(() => loadChapter(nextChapterUrl, true), 500);
-      } else {
-        setIsSpeaking(false);
-        setIsPaused(false);
-      }
-      return;
-    }
-    
-    void playEdgeChunk(next);
-    }, [ttsEngine, isSpeaking, isPaused, chunks.length, nextChapterUrl, playEdgeChunk, ttsMergeCount, ttsMergeAll, clampMergeCount]);
-
   const loadChapter = async (targetUrl: string, isAutoNav = false) => {
-      stopSpeech();
       
       if (isAutoNav && autoStopChapterLimit > 0 && chaptersReadCount >= autoStopChapterLimit) {
           setIsAutoMode(false);
@@ -964,7 +777,6 @@ export default function StoryFetcher() {
           processTranslatedText(cached.translatedContent);
           setStep(3);
           setMobileTab('reader');
-          saveToHistory(targetUrl, cached.translatedContent); // Log viewing
           window.scrollTo({ top: 0, behavior: 'smooth' });
           return;
       }
@@ -978,7 +790,6 @@ export default function StoryFetcher() {
           processTranslatedText(preloadedData.translatedContent);
           setStep(3);
           setMobileTab('reader');
-          saveToHistory(targetUrl, preloadedData.translatedContent);
           const styleToUse = isAutoMode && autoTranslationStyle ? autoTranslationStyle : translationStyle;
           saveToCache(targetUrl, preloadedData.content, preloadedData.translatedContent, preloadedData.nextUrl, preloadedData.prevUrl, styleToUse); // Save to cache confirmed
           setPreloadedData(null); 
@@ -989,391 +800,10 @@ export default function StoryFetcher() {
       fetchContent(targetUrl);
   };
 
-    const prepareUtterance = useCallback((startIndex: number) => {
-        if (startIndex >= chunks.length || startIndex < 0) return null;
-
-        const batch = buildTtsBatch(startIndex);
-        if (!batch.text) return null;
-
-        const utterance = new SpeechSynthesisUtterance(batch.text);
-    utterance.rate = speechRate;
-    utterance.pitch = 1.0;
-    utterance.volume = 1.0;
-    utterance.lang = selectedVoice?.lang || 'vi-VN';
-    if (selectedVoice) utterance.voice = selectedVoice;
-
-        const QUEUE_BATCHES = 3; // Giữ một buffer nhỏ phía trước để mượt
-
-    utterance.onstart = () => {
-            setActiveChunkIndex(startIndex);
-            setActiveCharIndex(0);
-            currentChunkIndexRef.current = startIndex;
-         speechRef.current = utterance;
-         lastSpeechEventAtRef.current = Date.now();
-    };
-
-    utterance.onboundary = (event) => {
-            lastSpeechEventAtRef.current = Date.now();
-            if (event.name !== 'word') return;
-
-            const charIndex = event.charIndex;
-            if (!Number.isFinite(charIndex)) return;
-
-            // Map word boundary back to the correct original chunk inside the merged batch.
-            let resolvedChunkIndex = startIndex;
-            let resolvedCharIndex = charIndex;
-
-            for (let i = 0; i < batch.indices.length; i++) {
-                const idx = batch.indices[i];
-                const start = batch.offsets[i];
-                const partLen = chunks[idx]?.length ?? 0;
-                const end = start + partLen;
-                const nextStart = i + 1 < batch.offsets.length ? batch.offsets[i + 1] : Infinity;
-
-                if (charIndex >= start && charIndex < end) {
-                    resolvedChunkIndex = idx;
-                    resolvedCharIndex = charIndex - start;
-                    break;
-                }
-
-                // If we're in the separator region, move highlight to next chunk.
-                if (charIndex >= end && charIndex < nextStart) {
-                    resolvedChunkIndex = Math.min(idx + 1, chunks.length - 1);
-                    resolvedCharIndex = 0;
-                    break;
-                }
-            }
-
-            setActiveChunkIndex(resolvedChunkIndex);
-            setActiveCharIndex(resolvedCharIndex);
-    };
-
-    utterance.onend = () => {
-         if (!activeUtterancesRef.current.has(utterance)) return;
-         activeUtterancesRef.current.delete(utterance);
-         setActiveCharIndex(null);
-
-                // Advance pointer to the next batch start.
-                const step = ttsMergeAll ? Math.max(1, chunks.length - startIndex) : clampMergeCount(ttsMergeCount);
-                const nextStart = startIndex + step;
-                currentChunkIndexRef.current = nextStart;
-
-                // Keep a small buffer ahead; too many queued items can be dropped by some browsers.
-                scheduleNext(nextStart + (QUEUE_BATCHES - 1) * step);
-
-            if (nextStart >= chunks.length) {
-            if (autoModeRef.current && nextChapterUrl) {
-                // Wait a bit before loading next chapter to let user hear end
-                setTimeout(() => loadChapter(nextChapterUrl, true), 500);
-            } else {
-                setIsSpeaking(false);
-                setIsPaused(false);
-            }
-         }
-    };
-
-    utterance.onerror = (e) => {
-         if (!activeUtterancesRef.current.has(utterance)) return;
-         activeUtterancesRef.current.delete(utterance);
-         if (e.error !== 'interrupted' && e.error !== 'canceled') {
-             console.error('Speech error', e);
-             // Skip error?
-             const step = ttsMergeAll ? Math.max(1, chunks.length - startIndex) : clampMergeCount(ttsMergeCount);
-             scheduleNext(startIndex + step);
-         }
-    };
-
-    activeUtterancesRef.current.add(utterance);
-    return utterance;
-    }, [chunks, buildTtsBatch, speechRate, selectedVoice, nextChapterUrl, loadChapter, ttsMergeCount, ttsMergeAll, clampMergeCount]);
-
-  const scheduleNext = useCallback((index: number) => {
-      const u = prepareUtterance(index);
-      if (u) {
-          window.speechSynthesis.speak(u);
-      }
-  }, [prepareUtterance]);
-
-  const speakNextChunk = useCallback(() => {
-     // Smart buffering: queue multiple chunks ahead to reduce gaps (Word-like)
-     window.speechSynthesis.cancel();
-     activeUtterancesRef.current.clear();
-     
-     const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
-    const step = ttsMergeAll ? Math.max(1, chunks.length - startIdx) : clampMergeCount(ttsMergeCount);
-     const QUEUE_BATCHES = 3;
-     
-      for (let i = 0; i < QUEUE_BATCHES; i++) {
-          const u = prepareUtterance(startIdx + i * step);
-          if (u) window.speechSynthesis.speak(u);
-      }
-     
-    }, [prepareUtterance, chunks.length, ttsMergeCount, ttsMergeAll, clampMergeCount]);
-
-  // Watchdog: Aggressive recovery when browser TTS gets stuck (ONLY for browser TTS, NOT Edge)
-  useEffect(() => {
-      // CRITICAL: Only run for browser TTS mode
-      if (ttsEngine !== 'browser') return;
-      if (!isSpeaking || isPaused) return;
-      
-      const synth = window.speechSynthesis;
-      let consecutiveStuckChecks = 0;
-      
-      const intervalId = setInterval(() => {
-          // Double-check we're still in browser mode
-          if (ttsEngine !== 'browser') {
-              clearInterval(intervalId);
-              return;
-          }
-          
-          try {
-              // Force resume if paused (browser bug workaround)
-              if (synth.paused) {
-                  synth.resume();
-              }
-
-              const last = lastSpeechEventAtRef.current;
-              const now = Date.now();
-              const timeSinceLastEvent = last > 0 ? now - last : 0;
-              
-              // Check if stuck: speaking but no events for 5+ seconds
-              const isStuck = synth.speaking && timeSinceLastEvent > 5000;
-              
-              // Check if queue empty but still have chunks to read
-              const queueEmpty = !synth.speaking && !synth.pending && 
-                               currentChunkIndexRef.current < chunks.length - 1;
-              
-              if (isStuck || queueEmpty) {
-                  consecutiveStuckChecks++;
-                  
-                  // First attempt: gentle resume
-                  if (consecutiveStuckChecks === 1) {
-                      synth.resume();
-                      synth.pause();
-                      synth.resume();
-                      return;
-                  }
-                  
-                  // Second attempt: restart from current position
-                  if (consecutiveStuckChecks >= 2) {
-                      console.log('[TTS Recovery] Restarting from chunk', currentChunkIndexRef.current);
-                      synth.cancel();
-                      activeUtterancesRef.current.clear();
-                      setTimeout(() => {
-                          if (isSpeaking && !isPaused && ttsEngine === 'browser') {
-                              speakNextChunk();
-                          }
-                      }, 100);
-                      consecutiveStuckChecks = 0;
-                  }
-              } else {
-                  consecutiveStuckChecks = 0;
-              }
-          } catch (e) {
-              console.error('[TTS Watchdog] Error:', e);
-          }
-      }, 1000); // Check every 1s (more aggressive)
-      
-      return () => clearInterval(intervalId);
-    }, [isSpeaking, isPaused, ttsEngine, speakNextChunk, chunks.length]);
-
-  // Edge TTS Watchdog: Detect stuck audio playback
-  useEffect(() => {
-      // Only run for Edge TTS mode
-      if (ttsEngine !== 'edge') return;
-      if (!isSpeaking || isPaused) return;
-      
-      const audio = audioRef.current;
-      if (!audio) return;
-      
-      let lastTime = audio.currentTime;
-      let stuckCount = 0;
-      
-      const intervalId = setInterval(() => {
-          // Double-check we're still in Edge mode
-          if (ttsEngine !== 'edge') {
-              clearInterval(intervalId);
-              return;
-          }
-          
-          try {
-              const currentTime = audio.currentTime;
-              
-              // Check if audio is supposed to be playing but isn't progressing
-              if (!audio.paused && !audio.ended && currentTime === lastTime && audio.readyState >= 2) {
-                  stuckCount++;
-                  
-                  if (stuckCount >= 3) {
-                      // Audio stuck for 3+ seconds, try to recover
-                      console.log('[Edge TTS Recovery] Audio stuck, restarting chunk', currentChunkIndexRef.current);
-                      const currentChunk = currentChunkIndexRef.current;
-                      audio.pause();
-                      audio.currentTime = 0;
-                      
-                      // Clear cache for this chunk to force refetch
-                      audioCacheRef.current.delete(currentChunk);
-                      
-                      setTimeout(() => {
-                          if (isSpeaking && !isPaused && ttsEngine === 'edge') {
-                              void playEdgeChunk(currentChunk);
-                          }
-                      }, 100);
-                      
-                      stuckCount = 0;
-                  }
-              } else {
-                  stuckCount = 0;
-              }
-              
-              lastTime = currentTime;
-          } catch (e) {
-              console.error('[Edge TTS Watchdog] Error:', e);
-          }
-      }, 1000); // Check every 1s
-      
-      return () => clearInterval(intervalId);
-    }, [isSpeaking, isPaused, ttsEngine, playEdgeChunk]);
-
-  const toggleSpeech = useCallback(() => {
-    if (!chunks.length) return;
-    
-    const startIdx = currentChunkIndexRef.current >= chunks.length ? 0 : currentChunkIndexRef.current;
-    
-    if (ttsEngine === 'edge') {
-      // Edge TTS mode (Word-like)
-      const audio = audioRef.current;
-      if (isSpeaking && !isPaused) {
-        // Pause
-        if (audio) audio.pause();
-        setIsPaused(true);
-        setTimeout(() => {
-          if ('mediaSession' in navigator) {
-            navigator.mediaSession.playbackState = 'paused';
-          }
-        }, 0);
-        return;
-      }
-      if (isPaused) {
-        // Resume
-        setIsPaused(false);
-        setTimeout(() => {
-          if ('mediaSession' in navigator) {
-            navigator.mediaSession.playbackState = 'playing';
-          }
-        }, 0);
-        if (audio && audio.src) {
-          void audio.play();
-        } else {
-          void playEdgeChunk(startIdx);
-        }
-        return;
-      }
-      // Start
-      window.speechSynthesis.cancel();
-      activeUtterancesRef.current.clear();
-      setIsSpeaking(true);
-      setIsPaused(false);
-      void playEdgeChunk(startIdx);
-      return;
-    }
-    
-    // Browser TTS mode
-    if (voices.length === 0) wakeUpSpeechEngine();
-    if (isSpeaking && !isPaused) { 
-        // Force Pause (actually Cancel + Save State)
-        activeUtterancesRef.current.clear();
-        window.speechSynthesis.cancel();
-        setIsPaused(true);
-    } 
-    else if (isPaused) { 
-        // Resume from current pos
-        setIsPaused(false);
-        speakNextChunk();
-    } 
-    else { 
-        // Start fresh or from existing index (if stopped/reset)
-        window.speechSynthesis.cancel(); 
-        setIsSpeaking(true); setIsPaused(false); 
-        currentChunkIndexRef.current = startIdx;
-        speakNextChunk(); 
-    }
-  }, [chunks, isSpeaking, isPaused, speakNextChunk, voices, ttsEngine, playEdgeChunk]);
-
-    const jumpToChunk = useCallback((index: number) => { 
-        // Stop both engines cleanly
-        window.speechSynthesis.cancel();
-        activeUtterancesRef.current.clear();
-        playTokenRef.current++;
-
-        const audio = audioRef.current;
-        if (audio) {
-            try { audio.pause(); } catch {}
-            audio.currentTime = 0;
-        }
-
-        currentChunkIndexRef.current = index; 
-        setActiveChunkIndex(index); 
-        setActiveCharIndex(null); 
-        setIsSpeaking(true);
-        setIsPaused(false);
-
-        // Start depending on engine
-        setTimeout(() => {
-            if (ttsEngine === 'edge') {
-                void playEdgeChunk(index);
-            } else {
-                speakNextChunk();
-            }
-        }, 50);
-    }, [speakNextChunk, ttsEngine, playEdgeChunk]);
-
   const handleScroll = useCallback(() => {
-      if (isSpeaking || !containerRef.current) return;
-      const containerTop = containerRef.current.getBoundingClientRect().top;
-      const containerHeight = containerRef.current.clientHeight;
-      const centerLine = containerTop + containerHeight / 3;
-      let closestIndex = -1; let minDistance = Infinity;
-      chunks.forEach((_, index) => {
-          const el = chunkRefs.current[index];
-          if (el) {
-              const rect = el.getBoundingClientRect();
-              const distance = Math.abs(rect.top - centerLine);
-              if (distance < minDistance) { minDistance = distance; closestIndex = index; }
-          }
-      });
-      if (closestIndex !== -1 && closestIndex !== currentChunkIndexRef.current) { currentChunkIndexRef.current = closestIndex; }
-  }, [chunks, isSpeaking]);
-
-  const handleRateChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-      const newRateRaw = parseFloat(e.target.value);
-      const newRate = Math.min(2.0, Math.max(0.5, newRateRaw));
-      setSpeechRate(newRate);
-      localStorage.setItem('reader_speech_rate', String(newRate));
-      if (!(isSpeaking && !isPaused)) return;
-
-      if (ttsEngine === 'edge') {
-          playTokenRef.current++;
-          const audio = audioRef.current;
-          if (audio) {
-              try { audio.pause(); } catch {}
-              audio.currentTime = 0;
-          }
-          setTimeout(() => void playEdgeChunk(currentChunkIndexRef.current), 50);
-          return;
-      }
-
-      window.speechSynthesis.cancel();
-      setTimeout(() => speakNextChunk(), 50);
-  };
-  const handleVoiceChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
-      const v = voices.find(val => val.name === e.target.value);
-      if (!v) return;
-      setSelectedVoice(v);
-      if (isSpeaking && !isPaused) {
-          window.speechSynthesis.cancel();
-          setTimeout(() => speakNextChunk(), 50);
-      }
-  };
+      if (!containerRef.current) return;
+      // Scroll tracking for future features (currently not used for TTS)
+  }, []);
 
 
 
@@ -1417,7 +847,7 @@ export default function StoryFetcher() {
     const urlToFetch = overrideUrl || url;
     if (!urlToFetch && inputMode === 'url') return;
     if (inputMode === 'manual' && !content) { setError('Vui lòng dán nội dung.'); return; }
-    setLoading(true); setError(''); setContent(''); setTranslatedContent(''); setChunks([]); setAnalysisType(null); setStep(1); stopSpeech(); setNextChapterUrl(null); setPrevChapterUrl(null); setPreloadedData(null); setChaptersReadCount(0);
+    setLoading(true); setError(''); setContent(''); setTranslatedContent(''); setChunks([]); setAnalysisType(null); setStep(1); setNextChapterUrl(null); setPrevChapterUrl(null); setPreloadedData(null); setChaptersReadCount(0);
     window.scrollTo({ top: 0, behavior: 'smooth' });
     try {
         if (inputMode === 'url') {
@@ -1437,11 +867,10 @@ export default function StoryFetcher() {
         setError('Cần nhập API Key.'); setShowApiKeyInput(true); return;
     }
 
-    setTranslating(true); setError(''); stopSpeech(); setChunks([]); setAnalysisType(null);
+    setTranslating(true); setError(''); setChunks([]); setAnalysisType(null);
     try {
       const translated = await fetchTranslation(content);
       setTranslatedContent(translated); processTranslatedText(translated); setStep(3); setMobileTab('reader');
-      saveToHistory(url || nextChapterUrl || "", translated);
       const styleToUse = isAutoMode && autoTranslationStyle ? autoTranslationStyle : translationStyle;
       saveToCache(url || nextChapterUrl || "", content, translated, nextChapterUrl, prevChapterUrl, styleToUse);
     } catch (err: any) { setError(err.message || 'Lỗi khi gọi AI.'); } finally { setTranslating(false); }
@@ -1450,154 +879,30 @@ export default function StoryFetcher() {
     const processTranslatedText = useCallback((text: string) => {
         if (!text) return;
 
-        // Also sanitize here so older cached translations still display nicely.
+        // Sanitize text
         const cleaned = text.replace(/\*\*/g, '').replace(/\r\n/g, '\n');
 
-        const splitToSentences = (input: string): string[] => {
-            const Segmenter = (Intl as any)?.Segmenter;
-            if (typeof Segmenter === 'function') {
-                try {
-                    const seg = new Segmenter('vi', { granularity: 'sentence' });
-                    return Array.from(seg.segment(input), (s: any) => String(s.segment).trim()).filter(Boolean);
-                } catch {
-                    // fall through
-                }
-            }
-            // Fallback: keep punctuation at end to sound natural.
-            const parts = input
-                .split(/(?<=[.!?…。！？])\s+/)
-                .map(s => s.trim())
-                .filter(Boolean);
-            return parts.length ? parts : [input.trim()].filter(Boolean);
-        };
+        // Simple paragraph splitting for display
+        const paragraphs = cleaned
+            .split(/\n{2,}|\n+/)
+            .map(p => p.trim())
+            .filter(p => p.length > 0);
 
-        const splitForTts = (input: string): string[] => {
-            // Bigger chunk => fewer transitions => usually smoother.
-            // But too big can cause the browser TTS to stall; allow user to tune.
-            const LIMIT = Math.min(3000, Math.max(200, ttsChunkChars));
-            const SOFT_TARGET = Math.max(200, Math.floor(LIMIT * 0.85));
-
-            const paragraphs = input
-                .split(/\n{2,}|\n+/)
-                .map(p => p.trim())
-                .filter(p => p.length > 0);
-
-            const isLikelyTitle = (p: string) => {
-                const lower = p.trim().toLowerCase();
-                return lower.startsWith('chương') || p.trim().length < 100;
-            };
-
-            const hardSplit = (s: string): string[] => {
-                const out: string[] = [];
-                let remaining = s.trim();
-                while (remaining.length > LIMIT) {
-                    // Prefer splitting on whitespace near the end.
-                    const windowStart = Math.max(0, LIMIT - 120);
-                    const slice = remaining.slice(windowStart, LIMIT + 1);
-                    const lastSpace = slice.lastIndexOf(' ');
-                    const cutAt = lastSpace > -1 ? windowStart + lastSpace : LIMIT;
-                    out.push(remaining.slice(0, cutAt).trim());
-                    remaining = remaining.slice(cutAt).trim();
-                }
-                if (remaining) out.push(remaining);
-                return out;
-            };
-
-            const out: string[] = [];
-            let buf = '';
-
-            // Keep first paragraph as title chunk if it looks like a chapter title.
-            let startIndex = 0;
-            if (paragraphs.length > 0 && isLikelyTitle(paragraphs[0])) {
-                out.push(paragraphs[0]);
-                startIndex = 1;
-            }
-
-            const flush = () => {
-                const t = buf.trim();
-                if (t) out.push(t);
-                buf = '';
-            };
-
-            for (let pi = startIndex; pi < paragraphs.length; pi++) {
-                const p = paragraphs[pi];
-                const sentences = splitToSentences(p);
-                for (const sentenceRaw of sentences) {
-                    const sentence = sentenceRaw.replace(/\s+/g, ' ').trim();
-                    if (!sentence) continue;
-
-                    if (!buf) {
-                        if (sentence.length <= LIMIT) {
-                            buf = sentence;
-                            continue;
-                        }
-                        // Single sentence longer than LIMIT
-                        out.push(...hardSplit(sentence));
-                        buf = '';
-                        continue;
-                    }
-
-                    const next = `${buf} ${sentence}`;
-                    if (next.length <= LIMIT) {
-                        buf = next;
-                        // If we've reached soft target, emit early to reduce risk of hitting engine limits.
-                        if (buf.length >= SOFT_TARGET) flush();
-                        continue;
-                    }
-
-                    flush();
-                    if (sentence.length <= LIMIT) {
-                        buf = sentence;
-                    } else {
-                        out.push(...hardSplit(sentence));
-                        buf = '';
-                    }
-                }
-
-                // Paragraph boundary: emit buffer so UI keeps some structure.
-                flush();
-            }
-
-            flush();
-            return out;
-        };
-
-        setChunks(splitForTts(cleaned));
-    }, [ttsChunkChars]);
-  const formatVoiceName = (name: string) => { if (name.includes('HoaiMy')) return '✨ Hoài My'; if (name.includes('NamMinh')) return 'Nam Minh'; return name.replace('Microsoft Server Speech Text to Speech Voice (vi-VN, ', '').replace('Microsoft ', '').replace(')', ''); };
+        setChunks(paragraphs);
+    }, []);
 
   // --- AUTO TRIGGERS ---
   useEffect(() => {
-    if (isAutoMode && step === 2 && content && !translating && !translatedContent) { const t = setTimeout(() => translateContent(), 500); return () => clearTimeout(t); }
+    if (isAutoMode && step === 2 && content && !translating && !translatedContent) { 
+      const t = setTimeout(() => translateContent(), 500); 
+      return () => clearTimeout(t); 
+    }
   }, [step, content, isAutoMode, translating, translatedContent]);
 
-  useEffect(() => {
-    if (isAutoMode && step === 3 && chunks.length > 0 && !isSpeaking && !isPaused) { const t = setTimeout(() => { currentChunkIndexRef.current = 0; speakNextChunk(); setIsSpeaking(true); }, 1000); return () => clearTimeout(t); }
-  }, [step, chunks, isAutoMode, isSpeaking, isPaused, speakNextChunk]);
-
-  useEffect(() => {
-    if (activeChunkIndex !== null && chunkRefs.current[activeChunkIndex]) { chunkRefs.current[activeChunkIndex]?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }
-  }, [activeChunkIndex]);
+  // TTS auto-scroll removed as TTS is disabled
 
   return (
     <div className="flex h-[100dvh] w-full bg-slate-100 text-slate-800 font-sans overflow-hidden">
-      {/* Hidden audio element for Edge TTS (Word-like playback) */}
-      <audio 
-        ref={audioRef} 
-        onEnded={handleEdgeAudioEnded} 
-        onPlay={() => {
-          if ('mediaSession' in navigator) {
-            navigator.mediaSession.playbackState = 'playing';
-          }
-        }}
-        onPause={() => {
-          if ('mediaSession' in navigator && !audioRef.current?.ended) {
-            navigator.mediaSession.playbackState = 'paused';
-          }
-        }}
-        preload="auto" 
-        className="hidden" 
-      />
       <style>{`@import url('https://fonts.googleapis.com/css2?family=Literata:opsz,wght@7..72,300;400;500;600&display=swap'); .font-literata { font-family: 'Literata', serif; }`}</style>
       
       {/* --- MOBILE NAV (BOTTOM) --- */}
@@ -1617,10 +922,10 @@ export default function StoryFetcher() {
          <button onClick={() => setShowExportMenu(true)} disabled={!translatedContent && translatedChapters.length === 0} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showExportMenu ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'} disabled:opacity-30`}>
              <Download size={20} /> <span className="text-[10px] font-bold">Tải</span>
          </button>
-         <button onClick={() => setShowHistory(true)} className={`relative flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showHistory ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
-             <HistoryIcon size={20} /> 
-             <span className="text-[10px] font-bold">Lịch sử</span>
-             {history.length > 0 && <span className="absolute top-2 right-4 w-2 h-2 bg-blue-500 rounded-full border border-white"></span>}
+         <button onClick={() => setShowBatchPanel(true)} className={`relative flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showBatchPanel ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
+             <Layers size={20} /> 
+             <span className="text-[10px] font-bold">Dịch hàng loạt</span>
+             {isBatchTranslating && <span className="absolute top-2 right-4 w-2 h-2 bg-green-500 rounded-full border border-white animate-pulse"></span>}
          </button>
          <button onClick={() => setShowCache(true)} className={`flex flex-col items-center gap-1 p-2 rounded-lg transition-colors w-16 ${showCache ? 'text-indigo-600 bg-indigo-50' : 'text-slate-400 hover:text-slate-600'}`}>
              <CheckCircle2 size={20} /> <span className="text-[10px] font-bold">Kho</span>
@@ -1750,14 +1055,8 @@ export default function StoryFetcher() {
             </div>
 
              <div className="flex items-center gap-2 md:gap-3">
-                 {/* Desktop Audio Controls - Always visible */}
-                 <div className="hidden md:flex items-center gap-1">
-                    <button onClick={toggleSpeech} disabled={!chunks.length} data-tts-toggle className={`p-2 rounded-full transition-all ${isSpeaking && !isPaused ? 'bg-gradient-to-r from-indigo-500 to-purple-500 text-white shadow-lg' : 'bg-slate-100 hover:bg-slate-200 text-slate-600'} disabled:opacity-30`} title="Phát/Dừng đọc">{isSpeaking && !isPaused ? <Pause size={20}/> : <Play size={20}/>}</button>
-                    <button onClick={stopSpeech} disabled={!isSpeaking && !isPaused} className="p-2 bg-slate-100 hover:bg-red-100 text-slate-600 hover:text-red-600 rounded-full transition-colors disabled:opacity-30" title="Dừng hoàn toàn"><Square size={18}/></button>
-                 </div>
-                 
                  {/* Auto Mode Toggle - Prominent position */}
-                 <button onClick={() => setIsAutoMode(!isAutoMode)} className={`hidden md:flex px-4 py-2 text-sm font-bold rounded-full transition-all items-center gap-2 shadow-md ${isAutoMode ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-emerald-500/30' : 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200'}`} title="Tự động đọc chương tiếp theo"><InfinityIcon size={16}/> {isAutoMode ? 'Auto ON' : 'Auto OFF'}</button>
+                 <button onClick={() => setIsAutoMode(!isAutoMode)} className={`hidden md:flex px-4 py-2 text-sm font-bold rounded-full transition-all items-center gap-2 shadow-md ${isAutoMode ? 'bg-gradient-to-r from-emerald-500 to-teal-500 text-white shadow-emerald-500/30' : 'bg-white text-slate-700 hover:bg-slate-50 border border-slate-200'}`} title="Tự động dịch và chuyển chương tiếp theo"><InfinityIcon size={16}/> {isAutoMode ? 'Auto ON' : 'Auto OFF'}</button>
                  
                  <div className="w-px h-6 bg-slate-300 hidden md:block"></div>
                  
@@ -1802,7 +1101,7 @@ export default function StoryFetcher() {
                 {chunks.length > 0 ? (
                     <div className="max-w-3xl mx-auto">
                         {chunks.map((chunk, index) => (
-                            <ParagraphItem key={index} index={index} text={chunk} isActive={activeChunkIndex === index} activeCharIndex={activeChunkIndex === index ? activeCharIndex : null} onClick={jumpToChunk} setRef={(el: any) => chunkRefs.current[index] = el} />
+                            <ParagraphItem key={index} index={index} text={chunk} onClick={() => {}} setRef={(el: any) => chunkRefs.current[index] = el} />
                         ))}
 
                         <div className="mt-16 flex flex-col items-center gap-4 py-8 border-t border-dashed border-slate-300/30">
@@ -1853,150 +1152,6 @@ export default function StoryFetcher() {
              )}
          </div>
       </div>
-
-      {/* --- FLOATING MINI PLAYER (Mobile & Desktop) --- */}
-      {chunks.length > 0 && (
-          <div className="fixed bottom-[72px] md:bottom-6 right-4 z-[55]">
-              {/* Compact Bubble */}
-              {!miniPlayerExpanded ? (
-                  <button
-                      onClick={() => setMiniPlayerExpanded(true)}
-                      className="group relative"
-                  >
-                      {/* Main Bubble */}
-                      <div className="w-14 h-14 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 shadow-2xl flex items-center justify-center cursor-pointer hover:scale-110 transition-transform duration-300 border-2 border-white/30">
-                          {isSpeaking && !isPaused ? (
-                              <Pause size={24} className="text-white drop-shadow-lg"/>
-                          ) : (
-                              <Play size={24} className="text-white drop-shadow-lg ml-0.5"/>
-                          )}
-                      </div>
-                      
-                      {/* Indicator Dots */}
-                      {isSpeaking && !isPaused && (
-                          <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-400 rounded-full border-2 border-white animate-pulse"></div>
-                      )}
-                      
-                      {isAutoMode && (
-                          <div className="absolute -bottom-1 -left-1 w-4 h-4 bg-yellow-400 rounded-full border-2 border-white flex items-center justify-center">
-                              <InfinityIcon size={8} className="text-slate-800"/>
-                          </div>
-                      )}
-                      
-                      {/* Progress Ring */}
-                      {activeChunkIndex !== null && chunks.length > 0 && (
-                          <svg className="absolute inset-0 w-14 h-14 -rotate-90">
-                              <circle
-                                  cx="28"
-                                  cy="28"
-                                  r="26"
-                                  stroke="rgba(255,255,255,0.2)"
-                                  strokeWidth="2"
-                                  fill="none"
-                              />
-                              <circle
-                                  cx="28"
-                                  cy="28"
-                                  r="26"
-                                  stroke="white"
-                                  strokeWidth="2"
-                                  fill="none"
-                                  strokeDasharray={`${2 * Math.PI * 26}`}
-                                  strokeDashoffset={`${2 * Math.PI * 26 * (1 - (activeChunkIndex / chunks.length))}`}
-                                  className="transition-all duration-300"
-                              />
-                          </svg>
-                      )}
-                      
-                      {/* Tooltip */}
-                      <div className="absolute bottom-full right-0 mb-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
-                          <div className="bg-slate-900 text-white text-xs px-3 py-1.5 rounded-lg shadow-lg whitespace-nowrap">
-                              {isSpeaking && !isPaused ? 'Đang phát' : 'Bấm để phát'} • {activeChunkIndex !== null ? `${activeChunkIndex + 1}/${chunks.length}` : `${chunks.length} đoạn`}
-                          </div>
-                      </div>
-                  </button>
-              ) : (
-                  /* Expanded Bubble */
-                  <div className="bg-white rounded-3xl shadow-2xl p-4 w-72 border border-slate-200 animate-in zoom-in-95 slide-in-from-bottom-5">
-                      {/* Header */}
-                      <div className="flex items-center justify-between mb-3">
-                          <div className="flex items-center gap-2">
-                              <div className={`w-2 h-2 rounded-full ${isSpeaking && !isPaused ? 'bg-green-500 animate-pulse' : 'bg-slate-300'}`}></div>
-                              <span className="text-sm font-bold text-slate-700">
-                                  {isSpeaking && !isPaused ? 'Đang đọc' : isPaused ? 'Tạm dừng' : 'Media Player'}
-                              </span>
-                          </div>
-                          <button 
-                              onClick={() => setMiniPlayerExpanded(false)}
-                              className="text-slate-400 hover:text-slate-600 transition-colors"
-                          >
-                              <X size={18}/>
-                          </button>
-                      </div>
-
-                      {/* Progress */}
-                      <div className="mb-3">
-                          <div className="flex justify-between text-xs text-slate-500 mb-1">
-                              <span>Đoạn {activeChunkIndex !== null ? activeChunkIndex + 1 : 0}</span>
-                              <span>{chunks.length} đoạn</span>
-                          </div>
-                          <div className="h-1 bg-slate-200 rounded-full overflow-hidden">
-                              <div 
-                                  className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
-                                  style={{ width: `${((activeChunkIndex || 0) / chunks.length) * 100}%` }}
-                              ></div>
-                          </div>
-                      </div>
-
-                      {/* Controls */}
-                      <div className="flex items-center justify-center gap-3 mb-3">
-                          <button 
-                              onClick={stopSpeech} 
-                              disabled={!isSpeaking && !isPaused}
-                              className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-all disabled:opacity-30"
-                          >
-                              <Square size={16}/>
-                          </button>
-                          
-                          <button 
-                              onClick={toggleSpeech} 
-                              disabled={!chunks.length}
-                              className="w-12 h-12 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 text-white flex items-center justify-center shadow-lg transition-all active:scale-95 disabled:opacity-50"
-                          >
-                              {isSpeaking && !isPaused ? <Pause size={24}/> : <Play size={24} className="ml-0.5"/>}
-                          </button>
-                          
-                          <button 
-                              onClick={() => setShowMobileSettings(true)}
-                              className="w-9 h-9 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-600 flex items-center justify-center transition-all"
-                          >
-                              <Sliders size={16}/>
-                          </button>
-                      </div>
-
-                      {/* Auto Mode */}
-                      <button 
-                          onClick={() => setIsAutoMode(!isAutoMode)}
-                          className={`w-full py-2 rounded-xl font-bold text-sm transition-all flex items-center justify-center gap-2 ${
-                              isAutoMode 
-                                  ? 'bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-md' 
-                                  : 'bg-slate-100 hover:bg-slate-200 text-slate-600'
-                          }`}
-                      >
-                          <InfinityIcon size={16}/>
-                          {isAutoMode ? 'Auto Đang Bật' : 'Bật Auto Mode'}
-                      </button>
-
-                      {/* Info */}
-                      {voiceDebugMsg && (
-                          <div className="mt-2 text-[10px] text-slate-400 text-center">
-                              {voiceDebugMsg}
-                          </div>
-                      )}
-                  </div>
-              )}
-          </div>
-      )}
 
       {/* --- MODALS & MENUS --- */}
 
@@ -2057,143 +1212,8 @@ export default function StoryFetcher() {
                   </div>
                   <div className="p-4 space-y-6 max-h-[70vh] overflow-y-auto">
 
-                      {/* Audio Settings */}
-                      <div className="pt-4 border-t border-slate-100">
-                          <div className="flex justify-between items-center mb-3">
-                              <label className="text-xs font-bold text-slate-400 uppercase">Giọng đọc & Audio</label>
-                              <span className="text-[10px] text-slate-400 max-w-[150px] truncate">{ttsEngine === 'edge' ? '✓ Mượt như Word' : voiceDebugMsg}</span>
-                          </div>
-                          <div className="space-y-4">
-                              {/* TTS Engine Toggle */}
-                              <div className="bg-emerald-50 p-3 rounded-xl border border-emerald-200">
-                                  <div className="text-[10px] font-bold text-emerald-700 mb-2">Chế độ đọc</div>
-                                  <select 
-                                      className="w-full bg-white text-sm focus:outline-none text-slate-700 p-2 rounded border border-emerald-300" 
-                                      value={ttsEngine}
-                                      onChange={(e) => {
-                                          const next = e.target.value as 'browser' | 'edge';
-                                          if (isSpeaking || isPaused) stopSpeech();
-                                          setTtsEngine(next);
-                                      }}
-                                  >
-                                      <option value="edge">Edge TTS (mượt như Word - đang bị chặn, dùng browser)</option>
-                                      <option value="browser">✓ Trình duyệt (đã tối ưu, mượt hơn)</option>
-                                  </select>
-                              </div>
-                              
-                              {ttsEngine === 'edge' ? (
-                                  <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                                      <div className="text-[10px] font-bold text-slate-500 mb-2">Giọng Edge</div>
-                                      <select 
-                                          className="w-full bg-transparent text-sm focus:outline-none text-slate-700" 
-                                          value={edgeVoice}
-                                          onChange={(e) => {
-                                              setEdgeVoice(e.target.value);
-                                              if (ttsEngine === 'edge' && (isSpeaking || isPaused)) stopSpeech();
-                                          }}
-                                      >
-                                          {EDGE_VOICES.map(v => (
-                                              <option key={v.name} value={v.name}>{v.friendlyName}</option>
-                                          ))}
-                                      </select>
-                                  </div>
-                              ) : (
-                              <div className="bg-slate-50 p-3 rounded-xl border border-slate-200">
-                                  <select className="w-full bg-transparent text-sm focus:outline-none text-slate-700" onChange={handleVoiceChange} value={selectedVoice?.name || ""}>
-                                      {voices.length === 0 ? <option>Đang tải giọng...</option> : 
-                                       voices.map(v => <option key={v.name} value={v.name}>{formatVoiceName(v.name)} ({v.lang})</option>)}
-                                  </select>
-                              </div>
-                              )}
-                              <div className="flex items-center gap-3">
-                                  <span className="text-xs font-bold text-slate-500">Tốc độ</span>
-                                  <input type="range" min="0.5" max="2.0" step="0.1" value={speechRate} onChange={handleRateChange} className="flex-1 h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"/>
-                                  <span className="text-xs font-bold text-slate-700 w-8 text-right">{speechRate}x</span>
-                              </div>
-
-                              <div className="flex items-center gap-3">
-                                  <span className="text-xs font-bold text-slate-500">Gộp hết</span>
-                                  <label className="flex items-center gap-2 select-none">
-                                      <input
-                                          type="checkbox"
-                                          checked={ttsMergeAll}
-                                          onChange={(e) => {
-                                              const on = e.target.checked;
-                                              setTtsMergeAll(on);
-                                              localStorage.setItem('reader_tts_merge_all', on ? '1' : '0');
-                                              if (isSpeaking || isPaused) stopSpeech();
-                                          }}
-                                          className="h-4 w-4 accent-indigo-600"
-                                      />
-                                      <span className="text-xs text-slate-600">Đọc cả chương 1 lần</span>
-                                  </label>
-
-                                  {!ttsMergeAll && (
-                                      <input
-                                          type="number"
-                                          min={1}
-                                          max={100}
-                                          inputMode="numeric"
-                                          value={ttsMergeCountDraft}
-                                          onChange={(e) => {
-                                              const raw = e.target.value;
-                                              // Allow empty string while typing (so user can delete)
-                                              setTtsMergeCountDraft(raw);
-                                          }}
-                                          onKeyDown={(e) => {
-                                              if (e.key === 'Enter') {
-                                                  (e.currentTarget as HTMLInputElement).blur();
-                                              }
-                                          }}
-                                          onBlur={() => {
-                                              const raw = ttsMergeCountDraft.trim();
-                                              const parsed = parseInt(raw || '1', 10);
-                                              const v = clampMergeCount(Number.isNaN(parsed) ? 1 : parsed);
-                                              setTtsMergeCount(v);
-                                              setTtsMergeCountDraft(String(v));
-                                              localStorage.setItem('reader_tts_merge_count', String(v));
-                                              if (isSpeaking || isPaused) stopSpeech();
-                                          }}
-                                          className="w-24 bg-white text-sm focus:outline-none text-slate-700 p-2 rounded border border-slate-300"
-                                      />
-                                  )}
-                              </div>
-                              
-                              <div className="flex gap-2">
-                                  <button onClick={toggleSpeech} className="flex-1 py-2 bg-indigo-100 text-indigo-700 rounded-lg text-sm font-bold flex items-center justify-center gap-2" data-tts-toggle>
-                                      {isSpeaking && !isPaused ? <Pause size={16}/> : <Play size={16}/>} {isSpeaking && !isPaused ? 'Tạm dừng' : 'Đọc Ngay'}
-                                  </button>
-                                  {(isSpeaking || isPaused) && (
-                                      <button 
-                                          onClick={() => {
-                                              if (ttsEngine === 'edge') {
-                                                  playTokenRef.current++;
-                                                  const audio = audioRef.current;
-                                                  if (audio) {
-                                                      try { audio.pause(); } catch {}
-                                                      audio.currentTime = 0;
-                                                  }
-                                                  void playEdgeChunk(currentChunkIndexRef.current);
-                                                  return;
-                                              }
-
-                                              const synth = window.speechSynthesis;
-                                              synth.cancel();
-                                              setTimeout(() => speakNextChunk(), 100);
-                                          }}
-                                          className="px-4 py-2 bg-green-100 text-green-700 rounded-lg shadow-sm font-bold text-sm"
-                                          title="Tiếp tục đọc nếu bị đứng"
-                                      >
-                                          ▶
-                                      </button>
-                                  )}
-                                  <button onClick={stopSpeech} className="px-4 py-2 bg-red-100 text-red-600 rounded-lg shadow-sm"><Square size={16}/></button>
-                              </div>
-                          </div>
-                      </div>
-
                       {/* Auto & Timer */}
-                      <div className="pt-4 border-t border-slate-100">
+                      <div>
                           <label className="text-xs font-bold text-slate-400 uppercase mb-3 block">Tự động</label>
                           <div className="flex flex-col gap-3">
                                <button onClick={() => {
@@ -2211,7 +1231,7 @@ export default function StoryFetcher() {
                                        <div className={`p-2 rounded-full ${isAutoMode ? 'bg-indigo-500 text-white' : 'bg-slate-200 text-slate-500'}`}><InfinityIcon size={18}/></div>
                                        <div className="text-left">
                                            <div className={`text-sm font-bold ${isAutoMode ? 'text-indigo-900' : 'text-slate-700'}`}>Tự động chuyển chương</div>
-                                           <div className="text-[10px] text-slate-400">Tự động dịch và đọc chương tiếp theo</div>
+                                           <div className="text-[10px] text-slate-400">Tự động dịch chương tiếp theo</div>
                                        </div>
                                    </div>
                                    <div className={`w-10 h-6 rounded-full p-1 transition-colors ${isAutoMode ? 'bg-indigo-500' : 'bg-slate-300'}`}>
@@ -2316,32 +1336,110 @@ export default function StoryFetcher() {
           </div>
       )}
 
-      {/* History Modal */}
-      {showHistory && (
+      {/* Batch Translation Panel */}
+      {showBatchPanel && (
           <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40 backdrop-blur-sm">
                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col animate-in zoom-in-95">
-                   <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl">
-                       <h3 className="font-bold text-slate-800 flex items-center gap-2"><HistoryIcon size={20}/> Lịch sử</h3>
-                       <button onClick={() => setShowHistory(false)} className="p-1 hover:bg-slate-200 rounded-full"><X size={20}/></button>
+                   <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-gradient-to-r from-indigo-50 to-purple-50 rounded-t-2xl">
+                       <h3 className="font-bold text-slate-800 flex items-center gap-2"><Layers size={20} className="text-indigo-600"/> Dịch hàng loạt</h3>
+                       <button onClick={() => setShowBatchPanel(false)} className="p-1 hover:bg-white/80 rounded-full"><X size={20}/></button>
                    </div>
-                   <div className="flex-1 overflow-y-auto p-2">
-                       {history.length === 0 ? <p className="text-center text-slate-400 py-8 text-sm italic">Chưa xem truyện nào gần đây.</p> : history.map((h,i) => (
-                           <div key={i} onClick={() => { 
-                               // History click logic: check cache first (should be logic inside cache check now, but let's explicity call loadChapter if URL exists)
-                               if (h.url) {
-                                   loadChapter(h.url);
-                               }
-                               setShowHistory(false); 
-                           }} className="p-3 hover:bg-indigo-50 rounded-xl cursor-pointer border-b border-slate-50 last:border-0 group transition-colors flex gap-3">
-                               <div className="w-10 h-10 rounded-lg bg-indigo-100 flex items-center justify-center text-indigo-600 font-bold shrink-0">{i+1}</div>
-                               <div className="flex-1 min-w-0">
-                                   <div className="font-bold text-sm text-slate-700 truncate group-hover:text-indigo-700">{h.title}</div>
-                                   <div className="text-[10px] text-slate-400 mt-1">{new Date(h.timestamp).toLocaleString('vi-VN')}</div>
+                   <div className="flex-1 overflow-y-auto p-4">
+                       {/* Input section */}
+                       <div className="space-y-4 mb-6">
+                           <div>
+                               <label className="block text-sm font-bold text-slate-700 mb-2">URL chương đầu tiên</label>
+                               <input 
+                                   type="text" 
+                                   value={batchStartUrl} 
+                                   onChange={(e) => setBatchStartUrl(e.target.value)}
+                                   placeholder="Nhập URL chương bắt đầu..."
+                                   className="w-full px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent text-sm"
+                                   disabled={isBatchTranslating}
+                               />
+                           </div>
+                           <div>
+                               <label className="block text-sm font-bold text-slate-700 mb-2">Số chương cần dịch: {batchChapterCount}</label>
+                               <input 
+                                   type="range" 
+                                   min="1" 
+                                   max="500" 
+                                   value={batchChapterCount}
+                                   onChange={(e) => setBatchChapterCount(Number(e.target.value))}
+                                   className="w-full"
+                                   disabled={isBatchTranslating}
+                               />
+                               <div className="flex justify-between text-xs text-slate-400 mt-1">
+                                   <span>1</span>
+                                   <span>500</span>
                                </div>
                            </div>
-                       ))}
+                       </div>
+
+                       {/* Control buttons */}
+                       <div className="flex gap-2 mb-6">
+                           {!isBatchTranslating ? (
+                               <button 
+                                   onClick={() => startBatchTranslation(batchStartUrl, batchChapterCount)}
+                                   disabled={!batchStartUrl.trim()}
+                                   className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-bold py-3 px-4 rounded-lg hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg"
+                               >
+                                   <Layers size={18} /> Bắt đầu dịch
+                               </button>
+                           ) : (
+                               <button 
+                                   onClick={stopBatchTranslation}
+                                   className="flex-1 bg-red-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-red-700 flex items-center justify-center gap-2 shadow-lg"
+                               >
+                                   <X size={18} /> Dừng lại
+                               </button>
+                           )}
+                       </div>
+
+                       {/* Progress display */}
+                       {isBatchTranslating && batchProgress && (
+                           <div className="bg-gradient-to-br from-indigo-50 to-purple-50 rounded-xl p-4 border border-indigo-200">
+                               <div className="flex items-center justify-between mb-2">
+                                   <span className="text-sm font-bold text-slate-700">Đang xử lý...</span>
+                                   <span className="text-sm font-bold text-indigo-600">{batchProgress.current}/{batchProgress.total}</span>
+                               </div>
+                               <div className="w-full bg-slate-200 rounded-full h-2.5 mb-3">
+                                   <div 
+                                       className="bg-gradient-to-r from-indigo-600 to-purple-600 h-2.5 rounded-full transition-all duration-300"
+                                       style={{ width: `${(batchProgress.current / batchProgress.total) * 100}%` }}
+                                   ></div>
+                               </div>
+                               <div className="text-xs text-slate-600 truncate">
+                                   <span className="font-semibold">URL hiện tại:</span> {batchProgress.currentUrl}
+                               </div>
+                           </div>
+                       )}
+
+                       {/* Translated cache list */}
+                       {!isBatchTranslating && translatedChapters.length > 0 && (
+                           <div className="mt-4">
+                               <h4 className="text-sm font-bold text-slate-700 mb-3 flex items-center gap-2">
+                                   <CheckCircle2 size={16} className="text-green-600"/> 
+                                   Đã dịch ({translatedChapters.length} chương)
+                               </h4>
+                               <div className="space-y-2 max-h-60 overflow-y-auto">
+                                   {translatedChapters.slice(0, 10).map((chapter, idx) => (
+                                       <div 
+                                           key={idx}
+                                           onClick={() => {
+                                               loadChapter(chapter.url);
+                                               setShowBatchPanel(false);
+                                           }}
+                                           className="p-2 bg-white rounded-lg border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 cursor-pointer transition-all group"
+                                       >
+                                           <div className="text-xs font-semibold text-slate-700 truncate group-hover:text-indigo-700">{chapter.title}</div>
+                                           <div className="text-[10px] text-slate-400 mt-1">{new Date(chapter.timestamp).toLocaleString('vi-VN')}</div>
+                                       </div>
+                                   ))}
+                               </div>
+                           </div>
+                       )}
                    </div>
-                   {history.length > 0 && <div className="p-3 border-t bg-slate-50 rounded-b-2xl text-center"><button onClick={() => { setHistory([]); localStorage.removeItem('reader_history'); }} className="text-xs text-red-500 hover:text-red-700 font-bold uppercase tracking-wide">Xóa tất cả</button></div>}
                </div>
           </div>
       )}
@@ -2352,35 +1450,97 @@ export default function StoryFetcher() {
                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col animate-in zoom-in-95">
                    <div className="p-4 border-b border-slate-100 flex justify-between items-center bg-slate-50 rounded-t-2xl">
                        <h3 className="font-bold text-slate-800 flex items-center gap-2 text-emerald-600"><CheckCircle2 size={20}/> Kho đã dịch</h3>
-                       <button onClick={() => setShowCache(false)} className="p-1 hover:bg-slate-200 rounded-full"><X size={20}/></button>
+                       <button onClick={() => { setShowCache(false); setSelectedChaptersForDelete([]); }} className="p-1 hover:bg-slate-200 rounded-full"><X size={20}/></button>
                    </div>
+                   
+                   {/* Selection controls */}
+                   {translatedChapters.length > 0 && (
+                       <div className="p-3 border-b bg-slate-50/50 flex items-center justify-between">
+                           <span className="text-xs font-bold text-slate-600">
+                               {selectedChaptersForDelete.length > 0 
+                                   ? `Đã chọn ${selectedChaptersForDelete.length} chương` 
+                                   : 'Chọn chương để xóa'}
+                           </span>
+                           <div className="flex gap-2">
+                               <button 
+                                   onClick={selectAllChaptersForDelete}
+                                   className="text-xs px-3 py-1 bg-emerald-500 hover:bg-emerald-600 text-white rounded-full font-bold"
+                               >
+                                   Chọn tất cả
+                               </button>
+                               <button 
+                                   onClick={() => setSelectedChaptersForDelete([])}
+                                   className="text-xs px-3 py-1 bg-slate-300 hover:bg-slate-400 text-slate-700 rounded-full font-bold"
+                               >
+                                   Bỏ chọn
+                               </button>
+                           </div>
+                       </div>
+                   )}
+                   
                    <div className="flex-1 overflow-y-auto p-2">
                        {translatedChapters.length === 0 ? <p className="text-center text-slate-400 py-8 text-sm italic">Chưa có bản dịch nào được lưu.</p> : translatedChapters.map((h,i) => {
                            const isBookmarked = bookmarks.some(b => b.url === h.url);
+                           const isSelected = selectedChaptersForDelete.includes(h.url);
                            return (
-                           <div key={i} onClick={() => { 
-                               loadChapter(h.url);
-                               setShowCache(false); 
-                           }} className="p-3 hover:bg-emerald-50 rounded-xl cursor-pointer border-b border-slate-50 last:border-0 group transition-colors flex gap-3">
-                               <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold shrink-0 relative ${isBookmarked ? 'bg-yellow-100' : 'bg-emerald-100'}`}>
-                                   <FileText size={18} className={isBookmarked ? 'text-yellow-600' : 'text-emerald-600'}/>
-                                   {isBookmarked && <Bookmark size={12} className="absolute -top-1 -right-1 fill-yellow-400 text-yellow-400"/>}
-                               </div>
-                               <div className="flex-1 min-w-0">
-                                   <div className="font-bold text-sm text-slate-700 truncate group-hover:text-emerald-700">{h.title}</div>
-                                   <div className="flex items-center gap-2 mt-1 flex-wrap">
-                                       {h.webName && <span className="text-[10px] px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-bold">{h.webName}</span>}
-                                       {h.translationType && <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${h.translationType === 'ancient' ? 'bg-amber-100 text-amber-700' : 'bg-purple-100 text-purple-700'}`}>
-                                           {h.translationType === 'ancient' ? 'Cổ Trang' : 'Hiện Đại'}
-                                       </span>}
+                           <div key={i} className={`p-3 rounded-xl border-b border-slate-50 last:border-0 group transition-colors flex gap-3 ${isSelected ? 'bg-red-50 border-red-200' : 'hover:bg-emerald-50'}`}>
+                               <input 
+                                   type="checkbox"
+                                   checked={isSelected}
+                                   onChange={() => toggleChapterForDelete(h.url)}
+                                   onClick={(e) => e.stopPropagation()}
+                                   className="w-4 h-4 mt-1 text-red-600 rounded focus:ring-2 focus:ring-red-500 cursor-pointer"
+                               />
+                               <div 
+                                   onClick={() => { 
+                                       if (!isSelected) {
+                                           loadChapter(h.url);
+                                           setShowCache(false); 
+                                       }
+                                   }} 
+                                   className={`flex gap-3 flex-1 min-w-0 ${!isSelected ? 'cursor-pointer' : 'cursor-default'}`}
+                               >
+                                   <div className={`w-10 h-10 rounded-lg flex items-center justify-center font-bold shrink-0 relative ${isBookmarked ? 'bg-yellow-100' : 'bg-emerald-100'}`}>
+                                       <FileText size={18} className={isBookmarked ? 'text-yellow-600' : 'text-emerald-600'}/>
+                                       {isBookmarked && <Bookmark size={12} className="absolute -top-1 -right-1 fill-yellow-400 text-yellow-400"/>}
                                    </div>
-                                   <div className="text-[10px] text-slate-400 mt-1 flex items-center gap-1"><Clock size={10}/> {new Date(h.timestamp).toLocaleString('vi-VN')}</div>
+                                   <div className="flex-1 min-w-0">
+                                       <div className={`font-bold text-sm text-slate-700 truncate ${!isSelected && 'group-hover:text-emerald-700'}`}>{h.title}</div>
+                                       <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                           {h.webName && <span className="text-[10px] px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full font-bold">{h.webName}</span>}
+                                           {h.translationType && <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold ${h.translationType === 'ancient' ? 'bg-amber-100 text-amber-700' : 'bg-purple-100 text-purple-700'}`}>
+                                               {h.translationType === 'ancient' ? 'Cổ Trang' : 'Hiện Đại'}
+                                           </span>}
+                                       </div>
+                                       <div className="text-[10px] text-slate-400 mt-1 flex items-center gap-1"><Clock size={10}/> {new Date(h.timestamp).toLocaleString('vi-VN')}</div>
+                                   </div>
                                </div>
                            </div>
                        );
                        })}
                    </div>
-                   {translatedChapters.length > 0 && <div className="p-3 border-t bg-slate-50 rounded-b-2xl text-center"><button onClick={() => { setTranslatedChapters([]); localStorage.removeItem('reader_translated_cache'); }} className="text-xs text-red-500 hover:text-red-700 font-bold uppercase tracking-wide">Xóa bộ nhớ đệm</button></div>}
+                   {translatedChapters.length > 0 && (
+                       <div className="p-3 border-t bg-slate-50 rounded-b-2xl flex gap-2 justify-center">
+                           {selectedChaptersForDelete.length > 0 && (
+                               <button 
+                                   onClick={deleteSelectedChapters} 
+                                   className="text-xs text-white bg-red-500 hover:bg-red-600 px-4 py-2 rounded-full font-bold uppercase tracking-wide transition-colors"
+                               >
+                                   Xóa {selectedChaptersForDelete.length} chương
+                               </button>
+                           )}
+                           <button 
+                               onClick={() => { 
+                                   setTranslatedChapters([]); 
+                                   localStorage.removeItem('reader_translated_cache'); 
+                                   setSelectedChaptersForDelete([]);
+                               }} 
+                               className="text-xs text-red-500 hover:text-red-700 font-bold uppercase tracking-wide px-4 py-2"
+                           >
+                               Xóa tất cả
+                           </button>
+                       </div>
+                   )}
                </div>
           </div>
       )}
@@ -2473,7 +1633,9 @@ export default function StoryFetcher() {
                    {translatedChapters.length > 0 && (
                        <div className="p-4 border-b bg-slate-50/50">
                            <div className="flex items-center justify-between mb-3">
-                               <span className="text-sm font-bold text-slate-700">Chọn chương để xuất:</span>
+                               <span className="text-sm font-bold text-slate-700">
+                                   Tất cả chương đã dịch ({translatedChapters.length}):
+                               </span>
                                <div className="flex gap-2">
                                    <button 
                                        onClick={selectAllChapters}
@@ -2489,7 +1651,7 @@ export default function StoryFetcher() {
                                    </button>
                                </div>
                            </div>
-                           <div className="max-h-48 overflow-y-auto space-y-1 custom-scrollbar">
+                           <div className="max-h-96 overflow-y-auto space-y-1 custom-scrollbar border border-slate-200 rounded-lg p-2 bg-white">
                                {translatedChapters.slice().reverse().map((chapter) => (
                                    <label 
                                        key={chapter.url} 
