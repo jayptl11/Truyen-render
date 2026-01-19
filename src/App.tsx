@@ -99,6 +99,8 @@ export default function StoryFetcher() {
   const [batchStartUrl, setBatchStartUrl] = useState<string>(''); // URL to start batch translation from
   const [batchTranslationStyle, setBatchTranslationStyle] = useState<'modern' | 'ancient'>('ancient');
   const [batchState, setBatchState] = useState<{isActive: boolean, startUrl: string, currentUrl: string, count: number, translated: number, style: 'modern' | 'ancient'} | null>(null);
+    const [autoResumeBatch, setAutoResumeBatch] = useState<boolean>(true);
+    const [isBatchResumePending, setIsBatchResumePending] = useState<boolean>(false);
   
   // --- MODEL PRIORITY ---
   const [modelPriority, setModelPriority] = useState<string>('gemini-2.5-flash');
@@ -212,6 +214,10 @@ export default function StoryFetcher() {
             setAiPriority(normalizeAiPriority(parsed));
         } catch {}
     }
+
+    const savedAutoResume = localStorage.getItem('reader_batch_auto_resume');
+    if (savedAutoResume === '0') setAutoResumeBatch(false);
+    if (savedAutoResume === '1') setAutoResumeBatch(true);
     
     // Load batch state
     const savedBatchState = localStorage.getItem('reader_batch_state');
@@ -220,12 +226,23 @@ export default function StoryFetcher() {
             const parsed = JSON.parse(savedBatchState);
             if (parsed && parsed.isActive) {
                 setBatchState(parsed);
+                setShowBatchPanel(true);
+
+                if (parsed.startUrl) setBatchStartUrl(parsed.startUrl);
+                if (typeof parsed.count === 'number') setBatchChapterCount(parsed.count);
+                if (parsed.style === 'modern' || parsed.style === 'ancient') setBatchTranslationStyle(parsed.style);
+                if (typeof parsed.translated === 'number' && typeof parsed.count === 'number' && parsed.currentUrl) {
+                    setBatchProgress({ current: parsed.translated, total: parsed.count, currentUrl: parsed.currentUrl });
+                }
+
                 // Auto resume if there was an active batch
-                if (hasAny) {
+                if (hasAny && (savedAutoResume !== '0')) {
                     console.log('Phát hiện batch translation chưa hoàn thành, tự động tiếp tục...');
+                    setIsBatchResumePending(true);
                     setTimeout(() => {
+                        setIsBatchResumePending(false);
                         resumeBatchTranslation(parsed);
-                    }, 1000);
+                    }, 800);
                 }
             }
         } catch {}
@@ -253,6 +270,12 @@ export default function StoryFetcher() {
           localStorage.removeItem('reader_batch_state');
       }
   }, [batchState]);
+
+  useEffect(() => {
+      try {
+          localStorage.setItem('reader_batch_auto_resume', autoResumeBatch ? '1' : '0');
+      } catch {}
+  }, [autoResumeBatch]);
   
   useEffect(() => {
       localStorage.setItem('reader_model_priority', modelPriority);
@@ -273,7 +296,47 @@ export default function StoryFetcher() {
   };
 
   // --- BATCH TRANSLATION FUNCTIONS ---
-  const startBatchTranslation = async (startUrl: string, count: number) => {
+  type BatchState = {
+      isActive: boolean;
+      startUrl: string;
+      currentUrl: string;
+      count: number;
+      translated: number;
+      style: 'modern' | 'ancient';
+  };
+
+  type BatchResumeMeta = {
+      alreadyTranslated: number;
+      totalCount: number;
+      startUrl: string;
+      style: 'modern' | 'ancient';
+  };
+
+  const persistBatchState = (state: BatchState | null) => {
+      try {
+          if (state) {
+              localStorage.setItem('reader_batch_state', JSON.stringify(state));
+          } else {
+              localStorage.removeItem('reader_batch_state');
+          }
+      } catch (err) {
+          void err;
+      }
+  };
+
+  const upsertTranslatedChapterToCache = (item: { url: string } & Record<string, unknown>) => {
+      setTranslatedChapters(prev => {
+          const updatedCache = [item, ...prev.filter(c => c.url !== item.url)].slice(0, 500);
+          try {
+              localStorage.setItem('reader_translated_cache', JSON.stringify(updatedCache));
+          } catch (err) {
+              void err;
+          }
+          return updatedCache;
+      });
+  };
+
+  const startBatchTranslation = async (startUrl: string, count: number, resumeMeta?: BatchResumeMeta) => {
       if (!startUrl || count <= 0) {
           setError('Vui lòng nhập URL và số chương hợp lệ');
           return;
@@ -285,25 +348,31 @@ export default function StoryFetcher() {
           return;
       }
 
+      const totalCount = resumeMeta?.totalCount ?? count;
+      const alreadyTranslated = resumeMeta?.alreadyTranslated ?? 0;
+      const effectiveStartUrl = resumeMeta?.startUrl ?? startUrl;
+      const effectiveStyle = resumeMeta?.style ?? batchTranslationStyle;
+
       setIsBatchTranslating(true);
       batchTranslationRef.current.shouldStop = false;
-      setBatchProgress({current: 0, total: count, currentUrl: startUrl});
+      setBatchProgress({current: alreadyTranslated, total: totalCount, currentUrl: startUrl});
       setShowBatchPanel(true);
       
       // Save batch state
-      const initialBatchState = {
+      const initialBatchState: BatchState = {
           isActive: true,
-          startUrl: startUrl,
+          startUrl: effectiveStartUrl,
           currentUrl: startUrl,
-          count: count,
-          translated: 0,
-          style: batchTranslationStyle
+          count: totalCount,
+          translated: alreadyTranslated,
+          style: effectiveStyle
       };
       setBatchState(initialBatchState);
+      persistBatchState(initialBatchState);
 
       let currentUrl = startUrl;
-      let translated = 0;
-      const newChapters: any[] = []; // Collect new chapters to save all at once
+      let translatedThisRun = 0;
+    const inRunCache = new Map<string, { url: string } & Record<string, unknown>>();
 
       for (let i = 0; i < count; i++) {
           if (batchTranslationRef.current.shouldStop) {
@@ -317,10 +386,9 @@ export default function StoryFetcher() {
           }
 
           try {
-              // Check cache first (in both state and newChapters array)
+              // Check cache first (state + in-run)
               const existingCache = translatedChapters.find(c => c.url === currentUrl);
-              const newCache = newChapters.find(c => c.url === currentUrl);
-              const cached = existingCache || newCache;
+              const cached = existingCache || inRunCache.get(currentUrl);
               
               if (cached) {
                   console.log(`Chapter ${i + 1} already cached: ${cached.title}`);
@@ -328,19 +396,38 @@ export default function StoryFetcher() {
                   // Check if there's a next URL
                   if (!cached.nextUrl) {
                       console.log(`No more chapters after cached chapter ${i + 1}`);
-                      translated++;
-                      setBatchProgress({current: translated, total: count, currentUrl: currentUrl});
+                      translatedThisRun++;
+                      const totalDone = alreadyTranslated + translatedThisRun;
+                      setBatchProgress({current: totalDone, total: totalCount, currentUrl: currentUrl});
+                      setBatchState(prev => prev ? ({...prev, translated: totalDone}) : null);
+                      persistBatchState({
+                          ...initialBatchState,
+                          translated: totalDone,
+                          currentUrl
+                      });
                       break;
                   }
                   
                   currentUrl = cached.nextUrl;
-                  translated++;
-                  setBatchProgress({current: translated, total: count, currentUrl: currentUrl});
+                  translatedThisRun++;
+                  const totalDone = alreadyTranslated + translatedThisRun;
+                  setBatchProgress({current: totalDone, total: totalCount, currentUrl: currentUrl});
+
+                  const updatedState: BatchState = {
+                      ...initialBatchState,
+                      startUrl: effectiveStartUrl,
+                      currentUrl,
+                      count: totalCount,
+                      translated: totalDone,
+                      style: effectiveStyle
+                  };
+                  setBatchState(prev => prev ? ({...prev, currentUrl, translated: totalDone, count: totalCount, startUrl: effectiveStartUrl, style: effectiveStyle}) : null);
+                  persistBatchState(updatedState);
                   continue;
               }
 
-              console.log(`Translating chapter ${i + 1}/${count}: ${currentUrl}`);
-              setBatchProgress({current: translated, total: count, currentUrl});
+              console.log(`Translating chapter ${alreadyTranslated + translatedThisRun + 1}/${totalCount}: ${currentUrl}`);
+              setBatchProgress({current: alreadyTranslated + translatedThisRun, total: totalCount, currentUrl});
 
               // Fetch content with retry
               let data;
@@ -355,7 +442,7 @@ export default function StoryFetcher() {
                       retryCount++;
                       if (retryCount >= maxRetries) throw err;
                       console.log(`Retry ${retryCount}/${maxRetries} for fetching content...`);
-                      setBatchProgress({current: translated, total: count, currentUrl: `🔄 Thử lại lần ${retryCount}/${maxRetries}...`});
+                      setBatchProgress({current: alreadyTranslated + translatedThisRun, total: totalCount, currentUrl: `🔄 Thử lại lần ${retryCount}/${maxRetries}...`});
                       await new Promise(resolve => setTimeout(resolve, 2000 * retryCount)); // Exponential backoff
                   }
               }
@@ -374,7 +461,7 @@ export default function StoryFetcher() {
                       retryCount++;
                       if (retryCount >= maxRetries) throw err;
                       console.log(`Retry ${retryCount}/${maxRetries} for translation...`);
-                      setBatchProgress({current: translated, total: count, currentUrl: `🔄 Thử dịch lại lần ${retryCount}/${maxRetries}...`});
+                      setBatchProgress({current: alreadyTranslated + translatedThisRun, total: totalCount, currentUrl: `🔄 Thử dịch lại lần ${retryCount}/${maxRetries}...`});
                       await new Promise(resolve => setTimeout(resolve, 2000 * retryCount)); // Exponential backoff
                   }
               }
@@ -392,7 +479,7 @@ export default function StoryFetcher() {
                   webName = urlObj.hostname.replace('www.', '');
               } catch {}
               
-              const newItem = { 
+              const newItem: { url: string } & Record<string, unknown> = { 
                   url: currentUrl, 
                   title, 
                   content: data.content, 
@@ -400,14 +487,15 @@ export default function StoryFetcher() {
                   nextUrl: data.nextUrl, 
                   prevUrl: data.prevUrl, 
                   timestamp: Date.now(), 
-                  translationType: batchTranslationStyle, 
+                  translationType: effectiveStyle, 
                   webName 
               };
               
-              // Add to collection
-              newChapters.push(newItem);
+              inRunCache.set(currentUrl, newItem);
+              upsertTranslatedChapterToCache(newItem);
               
-              translated++;
+              translatedThisRun++;
+              const totalDone = alreadyTranslated + translatedThisRun;
               
               // Check if there's a next URL
               if (!data.nextUrl) {
@@ -416,10 +504,19 @@ export default function StoryFetcher() {
               }
               
               currentUrl = data.nextUrl;
-              setBatchProgress({current: translated, total: count, currentUrl: currentUrl});
+              setBatchProgress({current: totalDone, total: totalCount, currentUrl: currentUrl});
               
               // Update batch state
-              setBatchState(prev => prev ? {...prev, currentUrl, translated} : null);
+              const nextBatchState: BatchState = {
+                  isActive: true,
+                  startUrl: effectiveStartUrl,
+                  currentUrl,
+                  count: totalCount,
+                  translated: totalDone,
+                  style: effectiveStyle
+              };
+              setBatchState(prev => prev ? ({...prev, currentUrl, translated: totalDone, count: totalCount, startUrl: effectiveStartUrl, style: effectiveStyle}) : null);
+              persistBatchState(nextBatchState);
 
               // Small delay to avoid overwhelming API
               await new Promise(resolve => setTimeout(resolve, 500));
@@ -435,40 +532,49 @@ export default function StoryFetcher() {
                   ? `Không thể tải nội dung chương ${i + 1}. Website có thể bị chặn hoặc URL không hợp lệ.`
                   : `Lỗi tại chương ${i + 1}: ${errorMsg}`;
               
-              setError(`❌ ${detailedError}\n\n✅ Đã dịch thành công: ${translated}/${count} chương.`);
-              setBatchProgress({current: translated, total: count, currentUrl: `LỖI: ${detailedError}`});
+              const totalDone = alreadyTranslated + translatedThisRun;
+              setError(`❌ ${detailedError}\n\n✅ Đã dịch thành công: ${totalDone}/${totalCount} chương.`);
+              setBatchProgress({current: totalDone, total: totalCount, currentUrl: `LỖI: ${detailedError}`});
               break;
           }
       }
 
-      // Save all new chapters to cache at once
-      if (newChapters.length > 0) {
-          // Use functional update to ensure we work with latest state
-          setTranslatedChapters(prev => {
-              const updatedCache = [...newChapters, ...prev.filter(c => !newChapters.some(nc => nc.url === c.url))].slice(0, 500);
-              localStorage.setItem('reader_translated_cache', JSON.stringify(updatedCache));
-              console.log(`Saved ${newChapters.length} new chapters to cache. Total: ${updatedCache.length}`);
-              return updatedCache;
-          });
-      }
-
       setIsBatchTranslating(false);
       setBatchState(null); // Clear batch state
-      if (translated > 0) {
-          setError(`✅ Hoàn tất! Đã dịch ${translated}/${count} chương.`);
+      persistBatchState(null);
+
+      const totalDone = alreadyTranslated + translatedThisRun;
+      if (totalDone > 0) {
+          setError(`✅ Hoàn tất! Đã dịch ${totalDone}/${totalCount} chương.`);
       }
   };
   
-  const resumeBatchTranslation = async (state: any) => {
-      if (!state || !state.isActive) return;
-      console.log(`Tiếp tục batch translation từ chương ${state.translated + 1}/${state.count}`);
-      await startBatchTranslation(state.currentUrl, state.count - state.translated);
+  const resumeBatchTranslation = async (state: unknown) => {
+      if (!state || typeof state !== 'object') return;
+      const s = state as Partial<BatchState>;
+      if (!s.isActive) return;
+
+      const remaining = Math.max(0, (typeof s.count === 'number' ? s.count : 0) - (typeof s.translated === 'number' ? s.translated : 0));
+      if (remaining <= 0) {
+          setBatchState(null);
+          persistBatchState(null);
+          return;
+      }
+
+      console.log(`Tiếp tục batch translation từ chương ${(s.translated || 0) + 1}/${s.count || remaining}`);
+      await startBatchTranslation(s.currentUrl || '', remaining, {
+          alreadyTranslated: s.translated || 0,
+          totalCount: s.count || remaining,
+          startUrl: s.startUrl || (s.currentUrl || ''),
+          style: (s.style === 'modern' || s.style === 'ancient') ? s.style : batchTranslationStyle
+      });
   };
 
   const stopBatchTranslation = () => {
       batchTranslationRef.current.shouldStop = true;
       setIsBatchTranslating(false);
       setBatchState(null); // Clear batch state
+      persistBatchState(null);
   };
   
   // Console log capture
@@ -2120,6 +2226,50 @@ export default function StoryFetcher() {
                        <button onClick={() => setShowBatchPanel(false)} className="p-1 hover:bg-white/80 rounded-full"><X size={20}/></button>
                    </div>
                    <div className="flex-1 overflow-y-auto p-4">
+                       {/* Resume banner */}
+                       {batchState?.isActive && !isBatchTranslating && (
+                           <div className="mb-4 rounded-xl p-3 border border-amber-200 bg-gradient-to-br from-amber-50 to-orange-50">
+                               <div className="flex items-center justify-between">
+                                   <div className="text-sm font-bold text-amber-800">Phát hiện batch chưa hoàn thành</div>
+                                   <div className="text-xs font-bold text-amber-700">{batchState.translated}/{batchState.count}</div>
+                               </div>
+                               <div className="text-[11px] text-slate-600 mt-1 truncate">
+                                   <span className="font-semibold">URL hiện tại: </span>{batchState.currentUrl}
+                               </div>
+                               {isBatchResumePending && (
+                                   <div className="mt-2 text-[11px] font-bold text-indigo-700 flex items-center gap-2">
+                                       <RotateCw size={14} className="animate-spin" /> Đang tự động tiếp tục...
+                                   </div>
+                               )}
+                               {!hasAnyTranslationKey() && (
+                                   <div className="mt-2 text-[11px] font-bold text-red-700">
+                                       Cần nhập API Key trước khi tiếp tục.
+                                   </div>
+                               )}
+                               <div className="mt-3 flex items-center justify-between gap-3">
+                                   <button
+                                       onClick={() => setAutoResumeBatch(v => !v)}
+                                       className={`text-xs font-bold px-3 py-1.5 rounded-full border transition-colors ${
+                                           autoResumeBatch ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-700 border-slate-300'
+                                       }`}
+                                   >
+                                       {autoResumeBatch ? 'Auto-resume: BẬT' : 'Auto-resume: TẮT'}
+                                   </button>
+                                   <button
+                                       onClick={() => {
+                                           setBatchState(null);
+                                           setIsBatchResumePending(false);
+                                           setBatchProgress({current: 0, total: 0, currentUrl: ''});
+                                           try { localStorage.removeItem('reader_batch_state'); } catch {}
+                                       }}
+                                       className="text-xs font-bold px-3 py-1.5 rounded-full bg-white text-red-700 border border-red-200 hover:bg-red-50"
+                                   >
+                                       Hủy batch
+                                   </button>
+                               </div>
+                           </div>
+                       )}
+
                        {/* Input section */}
                        <div className="space-y-4 mb-6">
                            <div>
@@ -2181,13 +2331,27 @@ export default function StoryFetcher() {
                        {/* Control buttons */}
                        <div className="flex gap-2 mb-6">
                            {!isBatchTranslating ? (
-                               <button 
-                                   onClick={() => startBatchTranslation(batchStartUrl, batchChapterCount)}
-                                   disabled={!batchStartUrl.trim()}
-                                   className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-bold py-3 px-4 rounded-lg hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg"
-                               >
-                                   <Layers size={18} /> Bắt đầu dịch
-                               </button>
+                               <>
+                                   <button 
+                                       onClick={() => startBatchTranslation(batchStartUrl, batchChapterCount)}
+                                       disabled={!batchStartUrl.trim()}
+                                       className="flex-1 bg-gradient-to-r from-indigo-600 to-purple-600 text-white font-bold py-3 px-4 rounded-lg hover:from-indigo-700 hover:to-purple-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg"
+                                   >
+                                       <Layers size={18} /> Bắt đầu dịch
+                                   </button>
+                                   {batchState?.isActive && (
+                                       <button
+                                           onClick={() => {
+                                               setIsBatchResumePending(false);
+                                               resumeBatchTranslation(batchState);
+                                           }}
+                                           disabled={!hasAnyTranslationKey() || !batchState.currentUrl}
+                                           className="flex-1 bg-emerald-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg"
+                                       >
+                                           <RotateCw size={18} /> Tiếp tục
+                                       </button>
+                                   )}
+                               </>
                            ) : (
                                <button 
                                    onClick={stopBatchTranslation}
