@@ -1,0 +1,17 @@
+ `<p>${p}</p>`).join('');
+              return separator + paragraphs;
+          }).join('');
+      } else if (translatedContent) {
+          contentToExport = translatedContent.split('\n\n').map(p => `<p>${p}</p>`).join('');
+      } else {
+          return;
+      }
+      
+      const printWindow = window.open('', '_blank');
+      if (printWindow) {
+          printWindow.document.write(`
+              <html>
+                  <head>
+                      <title>Xuất PDF</title>
+                      <style>
+                          body { font-family: 'Times New Roman', serif; padding: 2cm;

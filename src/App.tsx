@@ -98,6 +98,10 @@ export default function StoryFetcher() {
   const [showBatchPanel, setShowBatchPanel] = useState(false);
   const [batchStartUrl, setBatchStartUrl] = useState<string>(''); // URL to start batch translation from
   const [batchTranslationStyle, setBatchTranslationStyle] = useState<'modern' | 'ancient'>('ancient');
+  const [batchState, setBatchState] = useState<{isActive: boolean, startUrl: string, currentUrl: string, count: number, translated: number, style: 'modern' | 'ancient'} | null>(null);
+  
+  // --- MODEL PRIORITY ---
+  const [modelPriority, setModelPriority] = useState<string>('gemini-2.5-flash');
   
   // --- CACHE STATE ---
   const [translatedChapters, setTranslatedChapters] = useState<any[]>([]);
@@ -208,6 +212,30 @@ export default function StoryFetcher() {
             setAiPriority(normalizeAiPriority(parsed));
         } catch {}
     }
+    
+    // Load batch state
+    const savedBatchState = localStorage.getItem('reader_batch_state');
+    if (savedBatchState) {
+        try {
+            const parsed = JSON.parse(savedBatchState);
+            if (parsed && parsed.isActive) {
+                setBatchState(parsed);
+                // Auto resume if there was an active batch
+                if (hasAny) {
+                    console.log('Phát hiện batch translation chưa hoàn thành, tự động tiếp tục...');
+                    setTimeout(() => {
+                        resumeBatchTranslation(parsed);
+                    }, 1000);
+                }
+            }
+        } catch {}
+    }
+    
+    // Load model priority
+    const savedModelPriority = localStorage.getItem('reader_model_priority');
+    if (savedModelPriority) {
+        setModelPriority(savedModelPriority);
+    }
   }, []);
 
   useEffect(() => {
@@ -217,6 +245,18 @@ export default function StoryFetcher() {
   useEffect(() => {
       localStorage.setItem('reader_ai_priority', JSON.stringify(aiPriority));
   }, [aiPriority]);
+  
+  useEffect(() => {
+      if (batchState) {
+          localStorage.setItem('reader_batch_state', JSON.stringify(batchState));
+      } else {
+          localStorage.removeItem('reader_batch_state');
+      }
+  }, [batchState]);
+  
+  useEffect(() => {
+      localStorage.setItem('reader_model_priority', modelPriority);
+  }, [modelPriority]);
 
   const moveAiProvider = (provider: AiProvider, direction: -1 | 1) => {
       setAiPriority(prev => {
@@ -249,6 +289,17 @@ export default function StoryFetcher() {
       batchTranslationRef.current.shouldStop = false;
       setBatchProgress({current: 0, total: count, currentUrl: startUrl});
       setShowBatchPanel(true);
+      
+      // Save batch state
+      const initialBatchState = {
+          isActive: true,
+          startUrl: startUrl,
+          currentUrl: startUrl,
+          count: count,
+          translated: 0,
+          style: batchTranslationStyle
+      };
+      setBatchState(initialBatchState);
 
       let currentUrl = startUrl;
       let translated = 0;
@@ -366,6 +417,9 @@ export default function StoryFetcher() {
               
               currentUrl = data.nextUrl;
               setBatchProgress({current: translated, total: count, currentUrl: currentUrl});
+              
+              // Update batch state
+              setBatchState(prev => prev ? {...prev, currentUrl, translated} : null);
 
               // Small delay to avoid overwhelming API
               await new Promise(resolve => setTimeout(resolve, 500));
@@ -399,14 +453,22 @@ export default function StoryFetcher() {
       }
 
       setIsBatchTranslating(false);
+      setBatchState(null); // Clear batch state
       if (translated > 0) {
           setError(`✅ Hoàn tất! Đã dịch ${translated}/${count} chương.`);
       }
+  };
+  
+  const resumeBatchTranslation = async (state: any) => {
+      if (!state || !state.isActive) return;
+      console.log(`Tiếp tục batch translation từ chương ${state.translated + 1}/${state.count}`);
+      await startBatchTranslation(state.currentUrl, state.count - state.translated);
   };
 
   const stopBatchTranslation = () => {
       batchTranslationRef.current.shouldStop = true;
       setIsBatchTranslating(false);
+      setBatchState(null); // Clear batch state
   };
   
   // Console log capture
@@ -1007,8 +1069,8 @@ export default function StoryFetcher() {
                                   {
                                       role: 'system',
                                       content: styleToUse === 'ancient'
-                                          ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
-                                          : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
+                                          ? 'Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. CHỈ TRA KẾT QUẢ, KHÔNG THÊM LỜI GIỚI THIỆU. Bắt đầu bằng "Chương" hoặc nội dung chính.'
+                                          : 'Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). CHỈ TRA KẾT QUẢ, KHÔNG THÊM LỜI GIỚI THIỆU. Bắt đầu bằng "Chương" hoặc nội dung chính.'
                                   },
                                   { role: 'user', content: promptText + text }
                               ],
@@ -1067,8 +1129,8 @@ export default function StoryFetcher() {
                                   {
                                       role: 'system',
                                       content: styleToUse === 'ancient'
-                                          ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
-                                          : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
+                                          ? 'Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. CHỈ TRA KẾT QUẢ, KHÔNG THÊM LỜI GIỚI THIỆU. Bắt đầu bằng "Chương" hoặc nội dung chính.'
+                                          : 'Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). CHỈ TRA KẾT QUẢ, KHÔNG THÊM LỜI GIỚI THIỆU. Bắt đầu bằng "Chương" hoặc nội dung chính.'
                                   },
                                   { role: 'user', content: text }
                               ],
@@ -1118,8 +1180,8 @@ export default function StoryFetcher() {
                                   {
                                       role: 'system',
                                       content: styleToUse === 'ancient'
-                                          ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
-                                          : 'Bạn là biên tập viên truyện hiện đại. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). Không thêm lời dẫn.'
+                                          ? 'Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. CHỈ TRA KẾT QUẢ, KHÔNG THÊM LỜI GIỚI THIỆU. Bắt đầu bằng "Chương" hoặc nội dung chính.'
+                                          : 'Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). CHỈ TRA KẾT QUẢ, KHÔNG THÊM LỜI GIỚI THIỆU. Bắt đầu bằng "Chương" hoặc nội dung chính.'
                                   },
                                   { role: 'user', content: text }
                               ],
@@ -1174,8 +1236,8 @@ export default function StoryFetcher() {
                                   {
                                       role: 'system',
                                       content: styleToUse === 'ancient'
-                                          ? 'Bạn là biên tập viên truyện Tiên Hiệp/Kiếm Hiệp/Cổ Trang chuyên nghiệp. Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc, câu chữ rõ ràng tự nhiên. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. Không thêm lời dẫn.'
-                                          : 'Bạn là biên tập viên truyện hiện đại chuyên nghiệp. Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên, dễ hiểu, phù hợp truyện đô thị/ngôn tình (anh/em/cậu/tớ). Không thêm lời dẫn.'
+                                          ? 'Viết lại văn bản convert Hán Việt sang tiếng Việt mượt mà, phong cách cổ trang dễ đọc. Xưng hô: hắn/y/nàng/ta/ngươi/các ngươi. CHỈ TRA KẾT QUẢ, KHÔNG THÊM LỜI GIỚI THIỆU. Bắt đầu bằng "Chương" hoặc nội dung chính.'
+                                          : 'Viết lại văn bản convert Hán Việt sang tiếng Việt hiện đại tự nhiên (anh/em/cậu/tớ). CHỈ TRA KẾT QUẢ, KHÔNG THÊM LỜI GIỚI THIỆU. Bắt đầu bằng "Chương" hoặc nội dung chính.'
                                   },
                                   { role: 'user', content: text }
                               ],
