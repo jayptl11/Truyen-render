@@ -26,3 +26,11 @@ dist-ssr
 # Browser test output
 test-results/
 playwright-report/
+
+# Runtime assets copied from installed packages before dev/build
+public/tts/
+
+# Local Python environment
+.venv/
+__pycache__/
+*.pyc

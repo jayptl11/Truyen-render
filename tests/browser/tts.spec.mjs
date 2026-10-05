@@ -53,3 +53,39 @@ test('Edge selector fits a small phone and real audio pauses and resumes without
   expect(await page.evaluate(() => window.testTtsAudio.paused)).toBe(true);
   await expect(page.getByRole('button', { name: 'Nghe truyện', exact: true })).toBeVisible();
 });
+
+for (const phase of ['catalog', 'audio']) {
+  test(`Edge ${phase} explains Firefox AbortError and permits retry`, async ({ page }) => {
+    await page.addInitScript(phase => {
+      const original = window.fetch.bind(window);
+      let failOnce = true;
+      window.fetch = (url, options) => {
+        if (url === '/api/tts' && failOnce && ((phase === 'audio') === (options?.method === 'POST'))) {
+          failOnce = false;
+          return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'));
+        }
+        return original(url, options);
+      };
+    }, phase);
+    await page.route('**/api/tts', route => route.fulfill(route.request().method() === 'GET' ? { json: { voices } } : { body: wav(), contentType: 'audio/wav' }));
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Dán văn bản', exact: true }).click();
+    await page.getByLabel('Nội dung truyện', { exact: true }).fill('Chương thử\nMột đoạn truyện để nghe.');
+    await page.getByRole('button', { name: 'Đọc / nghe bản gốc', exact: true }).click();
+    await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
+    await page.getByLabel('Nguồn TTS', { exact: true }).selectOption('edge');
+    if (phase === 'catalog') {
+      await expect(page.locator('.speech-options-panel')).toContainText('kết nối bị gián đoạn');
+      await expect(page.locator('.speech-options-panel')).not.toContainText('The operation was aborted');
+      await page.getByRole('button', { name: 'Tải lại danh sách giọng' }).click();
+      await expect(page.getByLabel('Giọng đọc', { exact: true })).toHaveValue('vi-VN-NamMinhNeural');
+    } else {
+      await expect(page.getByLabel('Giọng đọc', { exact: true })).toHaveValue('vi-VN-NamMinhNeural');
+      await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
+      await page.getByRole('button', { name: 'Nghe truyện', exact: true }).click();
+      await expect(page.getByText('Nguồn giọng đọc phản hồi quá lâu hoặc kết nối bị gián đoạn. Thử lại hoặc chọn nguồn giọng khác.', { exact: true })).toBeVisible();
+      await page.getByRole('button', { name: 'Nghe truyện', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'Tạm dừng', exact: true })).toBeVisible();
+    }
+  });
+}

@@ -1,21 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { splitSpeechText } from './useSpeechReader';
 import type { SpeechOptions, SpeechStatus } from './useSpeechReader';
-import type { TtsVoice } from '../../types/tts';
+import type { AudioProvider, TtsVoice } from '../../types/tts';
+import { releaseLocalTts, synthesizeAudio } from '../../services/tts/audio';
+import { speechError } from '../../services/tts/errors';
 
-export function useAudioReader(options: SpeechOptions, voice: TtsVoice | undefined, rate: number) {
+export function useAudioReader(options: SpeechOptions, voice: TtsVoice | undefined, rate: number, provider: AudioProvider = 'edge') {
   const [status, setStatus] = useState<SpeechStatus>('idle');
   const [paragraph, setParagraph] = useState(options.initialParagraph);
   const [loading, setLoading] = useState(false);
+  const [loadingMessage, setLoadingMessage] = useState('');
   const [error, setError] = useState('');
   const state = useRef({ status: 'idle' as SpeechStatus, paragraph: options.initialParagraph, part: 0 });
-  const settings = useRef({ options, voice, rate });
+  const settings = useRef({ options, voice, rate, provider });
   const generation = useRef(0);
   const controller = useRef<AbortController | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrl = useRef('');
   const audioKey = useRef('');
-  useEffect(() => { settings.current = { options, voice, rate }; });
+  useEffect(() => { settings.current = { options, voice, rate, provider }; });
   const changeStatus = useCallback((next: SpeechStatus) => { state.current.status = next; setStatus(next); }, []);
   const clearAudio = useCallback(() => {
     const audio = audioRef.current;
@@ -25,11 +28,12 @@ export function useAudioReader(options: SpeechOptions, voice: TtsVoice | undefin
   }, []);
   const stop = useCallback(() => {
     generation.current++; controller.current?.abort(); controller.current = null;
+    releaseLocalTts();
     clearAudio(); state.current.part = 0; changeStatus('idle'); setLoading(false);
   }, [clearAudio, changeStatus]);
-  useEffect(() => () => { generation.current++; controller.current?.abort(); clearAudio(); }, [clearAudio]);
+  useEffect(() => () => { generation.current++; controller.current?.abort(); releaseLocalTts(); clearAudio(); }, [clearAudio]);
   useEffect(() => {
-    generation.current++; controller.current?.abort(); clearAudio();
+    generation.current++; controller.current?.abort(); releaseLocalTts(); clearAudio();
     const token = generation.current;
     state.current = { status: 'idle', paragraph: Math.min(Math.max(0, options.initialParagraph), Math.max(0, options.paragraphs.length - 1)), part: 0 };
     queueMicrotask(() => {
@@ -41,8 +45,8 @@ export function useAudioReader(options: SpeechOptions, voice: TtsVoice | undefin
     audioRef.current?.pause(); changeStatus('paused'); setLoading(false);
   }, [changeStatus]);
   const start = useCallback((at?: number, resume = false) => {
-    const { options: current, voice: selected } = settings.current;
-    if (!selected) { setError('Chọn một giọng Edge trước khi nghe.'); return; }
+    const { options: current, voice: selected, provider: source } = settings.current;
+    if (!selected) { setError('Chọn một giọng trước khi nghe.'); return; }
     if (!current.paragraphs.length) return;
     if (!resume) stop();
     else { generation.current++; controller.current?.abort(); }
@@ -54,26 +58,21 @@ export function useAudioReader(options: SpeechOptions, voice: TtsVoice | undefin
     const speak = async (line: number, part: number): Promise<void> => {
       if (!isCurrent()) return;
       if (line >= current.paragraphs.length) { clearAudio(); changeStatus('idle'); settings.current.options.onComplete(); return; }
-      const parts = splitSpeechText(current.paragraphs[line], 1200);
+      const parts = splitSpeechText(current.paragraphs[line], source === 'piper' ? 240 : 1200);
       if (part >= parts.length) { await speak(line + 1, 0); return; }
       state.current.paragraph = line; state.current.part = part;
       setParagraph(line); settings.current.options.onParagraph(line);
-      const key = JSON.stringify([selected.id, parts[part]]);
+      const key = JSON.stringify([source, selected.id, parts[part]]);
+      let requestSignal: AbortSignal | undefined;
       try {
         if (audioKey.current !== key || !audioUrl.current) {
           clearAudio(); setLoading(true);
           const request = new AbortController(); controller.current = request;
-          const response = await fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ voice: selected.id, language: selected.language, text: parts[part] }),
-            signal: AbortSignal.any([request.signal, AbortSignal.timeout(23000)]),
-          });
-          if (!response.ok) {
-            const failure = await response.json().catch(() => null);
-            throw new Error(failure?.error || `Không tạo được giọng Edge (HTTP ${response.status}).`);
-          }
-          const blob = await response.blob();
+          const signal = AbortSignal.any([request.signal, AbortSignal.timeout(source === 'piper' ? 180000 : source === 'espeak' ? 60000 : 26000)]);
+          requestSignal = signal;
+          const blob = await synthesizeAudio(source, parts[part], selected, signal, message => { if (isCurrent()) setLoadingMessage(message); });
           if (!isCurrent()) return;
-          if (!blob.size || !/audio\//.test(blob.type)) throw new Error('Edge không trả về âm thanh hợp lệ.');
+          if (!blob.size || !/audio\//.test(blob.type)) throw new Error('Nguồn giọng đọc không trả về âm thanh hợp lệ.');
           const url = URL.createObjectURL(blob);
           audioUrl.current = url; audioKey.current = key;
           if (!audioRef.current) audioRef.current = new Audio();
@@ -90,12 +89,13 @@ export function useAudioReader(options: SpeechOptions, voice: TtsVoice | undefin
         };
         audio.onerror = () => {
           if (!isCurrent()) return;
-          stop(); setError('Không phát được âm thanh Edge. Thử lại hoặc chọn giọng trên thiết bị.');
+          stop(); setError('Không phát được âm thanh. Thử lại hoặc chọn nguồn giọng khác.');
         };
         await audio.play();
       } catch (failure) {
         if (!isCurrent()) return;
-        stop(); setError(failure instanceof Error ? failure.message : 'Không phát được giọng Edge.');
+        const message = speechError(failure, requestSignal);
+        stop(); setError(message);
       }
     };
     void speak(index, firstPart);
@@ -114,18 +114,20 @@ export function useAudioReader(options: SpeechOptions, voice: TtsVoice | undefin
       settings.current.options.onParagraph(bounded);
     }
   }, [clearAudio, play]);
-  const previousVoice = useRef(voice?.id);
+  const voiceKey = `${provider}:${voice?.id || ''}`;
+  const previousVoice = useRef(voiceKey);
   useEffect(() => {
-    if (previousVoice.current !== voice?.id) {
-      previousVoice.current = voice?.id;
+    if (previousVoice.current !== voiceKey) {
+      previousVoice.current = voiceKey;
       generation.current++; controller.current?.abort(); clearAudio();
+      releaseLocalTts();
       if (state.current.status === 'playing') {
         state.current.status = 'paused';
         const token = generation.current;
         queueMicrotask(() => { if (token === generation.current) { setStatus('paused'); setLoading(false); } });
       }
     }
-  }, [voice?.id, clearAudio]);
+  }, [voiceKey, clearAudio]);
   useEffect(() => { if (audioRef.current) audioRef.current.playbackRate = rate; }, [rate]);
-  return { status, paragraph, loading, error, stop, play, toggle, selectParagraph };
+  return { status, paragraph, loading, loadingMessage, error, stop, play, toggle, selectParagraph };
 }

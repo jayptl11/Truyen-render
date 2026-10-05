@@ -4,6 +4,8 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/prepare-tts.mjs",
+    "prebuild": "node scripts/prepare-tts.mjs",
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
@@ -12,9 +14,12 @@
     "test:browser": "playwright test"
   },
   "dependencies": {
+    "@diffusionstudio/piper-wasm": "1.0.0",
+    "@mintplex-labs/piper-tts-web": "1.0.5",
     "@tailwindcss/vite": "^4.1.18",
+    "espeak-ng": "1.0.2",
     "lucide-react": "^0.562.0",
-    "msedge-tts": "2.0.9",
+    "onnxruntime-web": "1.18.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "tailwindcss": "^4.1.18"

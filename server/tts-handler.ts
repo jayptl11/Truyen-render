@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { edgeAudio, edgeVoices, TtsError } from '../server/tts.js';
+import { edgeAudio, edgeVoices, TtsError } from './tts.js';
 
 async function readBody(req: IncomingMessage): Promise<unknown> {
   const body = (req as IncomingMessage & { body?: unknown }).body;

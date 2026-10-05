@@ -2,10 +2,12 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import storyHandler from './api/story'
-import ttsHandler from './api/tts'
+import ttsHandler from './server/tts-handler'
 
 // https://vite.dev/config/
 export default defineConfig({
+  worker: { format: 'es' },
+  optimizeDeps: { include: ['espeak-ng', '@mintplex-labs/piper-tts-web', 'onnxruntime-web/wasm'] },
   plugins: [react(), tailwindcss(), {
     name: 'story-api',
     configureServer(server) {
