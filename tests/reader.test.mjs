@@ -391,17 +391,18 @@ test('pausing Edge during synthesis rejects late audio; loaded audio resumes at 
     resolveAudio(); await wait(30);
     assert.equal(app.audio.length, 0); assert.ok(app.button('Tiếp tục nghe'));
     app.click('Tiếp tục nghe'); await until(() => app.audio[0]?.playing);
+    await until(() => posts === 4, 'current and next two parts prepared');
     const audio = app.audio[0]; const oldEnd = audio.onended;
     audio.currentTime = 4.25;
     app.click('Tạm dừng'); await wait(20);
     assert.equal(audio.playing, false);
-    oldEnd(); await wait(20); assert.equal(posts, 2);
+    oldEnd(); await wait(20); assert.equal(posts, 4);
     app.click('Tiếp tục nghe'); await until(() => audio.playing);
-    assert.equal(audio.currentTime, 4.25); assert.equal(posts, 2);
+    assert.equal(audio.currentTime, 4.25); assert.equal(posts, 4);
     const currentEnd = audio.onended;
     app.w.document.querySelector('button[aria-label="Dừng đọc"]').click(); await wait(20);
     currentEnd(); await wait(20);
-    assert.equal(audio.playing, false); assert.equal(posts, 2);
+    assert.equal(audio.playing, false); assert.equal(posts, 4);
     assert.ok(app.button('Nghe truyện'));
   } finally { app.close(); }
 });
@@ -419,7 +420,7 @@ test('changing Edge paragraph, voice and rate while paused stays silent and resu
     assert.ok(app.button('Tiếp tục nghe')); assert.equal(app.audio[0].playing, false);
     assert.equal(app.requests.length, calls);
     app.click('Tiếp tục nghe'); await until(() => app.audio[0]?.playing);
-    const request = app.requests.filter(r => r.options.method === 'POST').at(-1);
+    const request = app.requests.filter(r => r.options.method === 'POST').find(r => JSON.parse(r.options.body).voice === 'vi-VN-HoaiMyNeural');
     assert.match(JSON.parse(request.options.body).text, /Nội dung chương 1/);
     assert.equal(JSON.parse(request.options.body).voice, 'vi-VN-HoaiMyNeural');
     assert.equal(app.audio[0].playbackRate, 1.5);
@@ -645,5 +646,51 @@ test('disabling continuous listening during chapter fetch prevents a late automa
     await wait(30);
     assert.equal(app.synthesis.current, null);
     assert.equal(app.synthesis.calls.length, 3);
+  } finally { app.close(); }
+});
+
+test('Edge prepares the next two parts while playing and serves automatic, next and previous transitions from memory', async () => {
+  let available = true;
+  const app = mount({ fetcher: (url, options) => {
+    if (url === '/api/tts' && options.method === 'POST' && !available) throw new Error('Network unavailable');
+    return remoteResponse(url, options);
+  } });
+  try {
+    await loadFirst(app); await chooseEdge(app);
+    app.click('Nghe truyện'); await until(() => app.audio[0]?.playing);
+    await until(() => app.requests.filter(r => r.options.method === 'POST').length === 3);
+    const audio = app.audio[0]; available = false;
+    assert.match(JSON.parse(app.requests.filter(r => r.options.method === 'POST')[1].options.body).text, /Nội dung chương 1/);
+    assert.match(app.w.document.querySelector('.speech-meta').textContent, /1/);
+    audio.finish(); await until(() => audio.playing);
+    assert.match(app.w.document.querySelector('.speech-meta').textContent, /2/);
+    app.w.document.querySelector('button[aria-label="Đoạn sau"]').click(); await wait(20);
+    assert.equal(audio.playing, true); assert.match(app.w.document.querySelector('.speech-meta').textContent, /3/);
+    app.w.document.querySelector('button[aria-label="Đoạn trước"]').click(); await wait(20);
+    assert.equal(audio.playing, true); assert.match(app.w.document.querySelector('.speech-meta').textContent, /2/);
+    assert.equal(app.requests.filter(r => r.options.method === 'POST').length, 3);
+    assert.equal(app.w.document.querySelector('.inline-message'), null);
+  } finally { app.close(); }
+});
+
+test('manual next shares in-flight Edge prefetch, and pause rejects its late reply without replay', async () => {
+  let pending;
+  const app = mount({ fetcher: (url, options) => {
+    if (url === '/api/tts' && options.method === 'POST' && /Nội dung chương/.test(JSON.parse(options.body).text)) {
+      return new Promise(resolve => { pending = { signal: options.signal, resolve }; });
+    }
+    return remoteResponse(url, options);
+  } });
+  try {
+    await loadFirst(app); await chooseEdge(app);
+    app.click('Nghe truyện'); await until(() => pending && app.audio[0]?.playing);
+    assert.equal(app.requests.filter(r => r.options.method === 'POST').length, 2);
+    app.w.document.querySelector('button[aria-label="Đoạn sau"]').click(); await wait(20);
+    assert.equal(app.requests.filter(r => r.options.method === 'POST').length, 2);
+    assert.equal(app.audio[0].playing, false);
+    app.click('Tạm dừng'); await wait(20); assert.equal(pending.signal.aborted, true);
+    pending.resolve(new Response('late audio', { headers: { 'Content-Type': 'audio/mpeg' } })); await wait(30);
+    assert.equal(app.audio[0].playing, false); assert.ok(app.button('Tiếp tục nghe'));
+    assert.equal(app.requests.filter(r => r.options.method === 'POST').length, 2);
   } finally { app.close(); }
 });

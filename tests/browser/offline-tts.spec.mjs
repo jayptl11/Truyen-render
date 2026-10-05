@@ -15,6 +15,13 @@ test('eSpeak synthesizes Vietnamese WAV locally, pauses, and reads the next para
   const calls = [];
   page.on('request', request => calls.push(request.url()));
   await page.addInitScript(() => {
+    const NativeWorker = window.Worker;
+    window.localWorkers = 0; window.localWorkerResults = 0;
+    window.Worker = function (...args) {
+      const worker = new NativeWorker(...args); window.localWorkers++;
+      worker.addEventListener('message', event => { if (event.data.blob) window.localWorkerResults++; });
+      return worker;
+    };
     const NativeAudio = window.Audio;
     window.Audio = function () { const audio = new NativeAudio(); window.localTestAudio = audio; return audio; };
     const create = URL.createObjectURL.bind(URL);
@@ -26,6 +33,7 @@ test('eSpeak synthesizes Vietnamese WAV locally, pauses, and reads the next para
   await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
   await page.getByRole('button', { name: 'Nghe truyện', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.localTestAudio?.currentTime || 0), { timeout: 20000 }).toBeGreaterThan(0.1);
+  await expect.poll(() => page.evaluate(() => window.localWorkerResults)).toBe(2);
   const generated = await page.evaluate(async () => {
     const buffer = await window.localTestBlob.arrayBuffer();
     return { size: buffer.byteLength, header: new TextDecoder().decode(buffer.slice(0, 4)), type: window.localTestBlob.type };
@@ -40,6 +48,7 @@ test('eSpeak synthesizes Vietnamese WAV locally, pauses, and reads the next para
   await expect.poll(() => page.evaluate(() => window.localTestAudio?.currentTime || 0), { timeout: 10000 }).toBeGreaterThan(0.1);
   expect(calls.some(url => url.includes('/api/tts'))).toBe(false);
   expect(calls.filter(url => url.includes('espeak-ng') && /\.wasm$/.test(url))).toHaveLength(1);
+  expect(await page.evaluate(() => window.localWorkers)).toBe(1);
 });
 
 test('Piper exposes Vietnamese model choices without downloading models on selection', async ({ page }) => {

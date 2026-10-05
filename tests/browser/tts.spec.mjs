@@ -41,6 +41,7 @@ test('Edge selector fits a small phone and real audio pauses and resumes without
   await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
   await page.getByRole('button', { name: 'Nghe truyện', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.testTtsAudio?.currentTime || 0)).toBeGreaterThan(0.1);
+  await expect.poll(() => posts).toBe(3);
   await page.getByRole('button', { name: 'Tạm dừng', exact: true }).click();
   expect(await page.evaluate(() => window.testTtsAudio.paused)).toBe(true);
   const pausedAt = await page.evaluate(() => window.testTtsAudio.currentTime);
@@ -48,7 +49,7 @@ test('Edge selector fits a small phone and real audio pauses and resumes without
   expect(await page.evaluate(() => window.testTtsAudio.currentTime)).toBeCloseTo(pausedAt, 2);
   await page.getByRole('button', { name: 'Tiếp tục nghe', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.testTtsAudio.currentTime)).toBeGreaterThan(pausedAt);
-  expect(posts).toBe(1);
+  expect(posts).toBe(3);
   await page.getByRole('button', { name: 'Dừng đọc', exact: true }).click();
   expect(await page.evaluate(() => window.testTtsAudio.paused)).toBe(true);
   await expect(page.getByRole('button', { name: 'Nghe truyện', exact: true })).toBeVisible();
@@ -89,3 +90,47 @@ for (const phase of ['catalog', 'audio']) {
     }
   });
 }
+
+test('Edge buffers slow synthesis and switches manually and automatically without waiting for another request', async ({ page, context }) => {
+  let posts = 0; let completed = 0;
+  await page.addInitScript(() => {
+    const NativeAudio = window.Audio;
+    window.bufferedPlaybackEvents = [];
+    window.Audio = function () {
+      const audio = new NativeAudio(); window.bufferedTestAudio = audio;
+      audio.addEventListener('playing', () => window.bufferedPlaybackEvents.push(performance.now()));
+      audio.addEventListener('ended', () => { window.transitionStarted = performance.now(); });
+      return audio;
+    };
+  });
+  await page.route('**/api/tts', async route => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: { voices } });
+    posts++;
+    await new Promise(resolve => setTimeout(resolve, 700));
+    await route.fulfill({ body: wav(), contentType: 'audio/wav' }); completed++;
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Dán văn bản', exact: true }).click();
+  await page.getByLabel('Nội dung truyện', { exact: true }).fill('Chương thử nghiệm\nĐoạn đầu tiên.\nĐoạn thứ hai.');
+  await page.getByRole('button', { name: 'Đọc / nghe bản gốc', exact: true }).click();
+  await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
+  await page.getByLabel('Nguồn TTS', { exact: true }).selectOption('edge');
+  await expect(page.getByLabel('Giọng đọc', { exact: true })).toHaveValue('vi-VN-NamMinhNeural');
+  await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
+  await page.getByRole('button', { name: 'Nghe truyện', exact: true }).click();
+  await expect.poll(() => completed).toBe(3);
+  await context.setOffline(true);
+  await page.evaluate(() => {
+    window.transitionStarted = performance.now();
+    document.querySelector('button[aria-label="Đoạn sau"]').click();
+  });
+  await expect.poll(() => page.evaluate(() => window.bufferedPlaybackEvents.length)).toBe(2);
+  const manualDelay = await page.evaluate(() => window.bufferedPlaybackEvents[1] - window.transitionStarted);
+  expect(manualDelay).toBeLessThan(500);
+  await page.evaluate(() => { window.bufferedTestAudio.currentTime = window.bufferedTestAudio.duration - 0.05; });
+  await expect.poll(() => page.evaluate(() => window.bufferedPlaybackEvents.length)).toBe(3);
+  const automaticDelay = await page.evaluate(() => window.bufferedPlaybackEvents[2] - window.transitionStarted);
+  expect(automaticDelay).toBeLessThan(500);
+  expect(posts).toBe(3);
+  await expect(page.locator('.speech-loading')).toHaveCount(0);
+});
