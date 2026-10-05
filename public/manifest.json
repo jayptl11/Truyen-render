@@ -1,12 +1,12 @@
 {
-  "theme_color": "#4f46e5",
-  "background_color": "#ffffff",
+  "theme_color": "#345c48",
+  "background_color": "#fbfaf7",
   "display": "standalone",
   "scope": "/",
   "start_url": "/",
-  "name": "AI Truyen Reader",
+  "name": "Truyện · Đọc & Nghe",
   "short_name": "TruyenReader",
-  "description": "Đọc truyện convert sang thuần Việt bằng AI",
+  "description": "Đọc và nghe truyện, dịch khi cần",
   "icons": [
     {
       "src": "/icon.svg",

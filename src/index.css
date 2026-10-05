@@ -1,1 +1,22 @@
 @import "tailwindcss";
+@import "./App.css";
+
+@theme inline {
+  --color-indigo-50: var(--accent-soft);
+  --color-indigo-100: var(--accent-soft);
+  --color-indigo-200: var(--line);
+  --color-indigo-500: var(--accent);
+  --color-indigo-600: var(--accent);
+  --color-indigo-700: var(--accent);
+  --color-indigo-800: var(--ink);
+  --color-indigo-900: var(--ink);
+  --color-slate-50: var(--soft);
+  --color-slate-100: var(--soft);
+  --color-slate-200: var(--line);
+  --color-slate-300: var(--line);
+  --color-slate-400: var(--muted);
+  --color-slate-500: var(--muted);
+  --color-slate-600: var(--muted);
+  --color-slate-700: var(--ink);
+  --color-slate-800: var(--ink);
+}
