@@ -48,11 +48,18 @@ function mount({ saved = {}, unsupported = false, fetcher, fakeClock = false, de
     w.SpeechSynthesisUtterance = class { constructor(text) { this.text = text; } };
   }
   const audio = [];
+  let lastPlayed;
+  const currentAudio = () => audio.find(item => item.playing) || audio.find(item => item.onended) || lastPlayed || audio[0];
+  const active = new Proxy({}, {
+    get: (_, key) => { const target = currentAudio(); const value = target?.[key]; return typeof value === 'function' ? value.bind(target) : value; },
+    set: (_, key, value) => { currentAudio()[key] = value; return true; },
+  });
+  const trackedAudio = new Proxy(audio, { get: (target, key) => key === '0' && target.length ? active : Reflect.get(target, key) });
   w.Audio = class {
-    constructor() { this.currentTime = 0; this.playbackRate = 1; this.playing = false; this.plays = 0; audio.push(this); }
+    constructor() { this.currentTime = 0; this.playbackRate = 1; this.playing = false; this.plays = 0; this.duration = 10; this.readyState = 1; audio.push(this); }
     set src(value) { this.source = value; this.currentTime = 0; }
     get src() { return this.source; }
-    play() { this.playing = true; this.plays++; return Promise.resolve(); }
+    play() { lastPlayed = this; this.playing = true; this.plays++; return Promise.resolve(); }
     pause() { this.playing = false; }
     load() { this.currentTime = 0; }
     removeAttribute(name) { if (name === 'src') this.src = ''; }
@@ -76,7 +83,7 @@ function mount({ saved = {}, unsupported = false, fetcher, fakeClock = false, de
     Object.getOwnPropertyDescriptor(prototype, 'value').set.call(element, value);
     element.dispatchEvent(new w.Event(element.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
   };
-  return { dom, w, errors, requests, synthesis, audio, intervals, button, click, input, close() { dom.window.close(); } };
+  return { dom, w, errors, requests, synthesis, audio: trackedAudio, intervals, button, click, input, close() { dom.window.close(); } };
 }
 async function loadFirst(app) {
   await until(() => app.w.document.querySelector('input[placeholder*="Dán link"]'));
@@ -463,7 +470,7 @@ test('turning off continuous listening while Edge is playing prevents automatic 
     await wait(20);
     assert.equal(app.audio[0].playing, false);
     assert.match(app.w.document.querySelector('article').textContent, /Chương 1: Bản gốc/);
-    assert.equal(app.requests.filter(r => r.options.method === 'POST').length, 3);
+    assert.equal(app.audio.filter(item => item.playing).length, 0);
   } finally { app.close(); }
 });
 
@@ -617,7 +624,8 @@ test('bookmark restores its saved paragraph even when reopening the current chap
     app.w.document.querySelector('button[aria-label="Đoạn sau"]').click(); await wait(20);
     app.click('Các chương đánh dấu'); await wait(20);
     const dialog = app.w.document.querySelector('[role="dialog"]');
-    [...dialog.querySelectorAll('button')].find(b => b.textContent.includes('Chương 1')).click(); await wait(30);
+    [...dialog.querySelectorAll('button')].find(b => b.textContent.includes('Chương 1')).click();
+    await until(() => !app.w.document.querySelector('[role="dialog"]') && app.w.document.querySelector('.speech-meta')?.textContent.startsWith('2'));
     app.click('Nghe truyện'); await until(() => app.synthesis.current);
     assert.match(app.synthesis.current.text, /Nội dung chương 1 chưa dịch/);
     assert.equal(app.synthesis.calls.length, 1);
@@ -730,10 +738,10 @@ test('late rejection of the previous audio play promise cannot stop the next par
     await loadFirst(app); await chooseEdge(app);
     app.click('Nghe truyện'); await until(() => app.audio[0]?.playing);
     const audio = app.audio[0]; let rejectOld;
-    const play = audio.play.bind(audio);
-    audio.play = () => { void play(); return new Promise((resolve, reject) => { rejectOld = reject; }); };
+    const play = app.w.Audio.prototype.play;
+    app.w.Audio.prototype.play = function () { void play.call(this); return new Promise((resolve, reject) => { rejectOld = reject; }); };
     audio.finish(); await until(() => rejectOld && audio.playing);
-    audio.play = play; audio.finish(); await until(() => audio.playing);
+    app.w.Audio.prototype.play = play; audio.finish(); await until(() => audio.playing);
     rejectOld(new DOMException('The operation was aborted.', 'AbortError')); await wait(30);
     assert.equal(audio.playing, true); assert.equal(app.w.document.querySelector('.inline-message'), null);
   } finally { app.close(); }
@@ -765,5 +773,39 @@ test('failed audio synthesis holds the exact part of a long paragraph and resume
     assert.equal(JSON.parse(requests.at(-1).options.body).text, secondPart);
     assert.equal(requests.filter(r => JSON.parse(r.options.body).text === firstPart).length, 1);
     assert.equal(app.w.document.querySelector('.inline-message'), null);
+  } finally { app.close(); }
+});
+
+test('stop during an automatic chapter handoff cancels late content and cannot restart speech', async () => {
+  const waiting = [];
+  const app = mount({ fetcher: (url, options) => {
+    const target = new URL(url, 'http://localhost:5173').searchParams.get('url');
+    if (target === chapter2) return new Promise(resolve => waiting.push(() => resolve(new Response(JSON.stringify({ html: html(2) })))));
+    return new Response(JSON.stringify({ html: html(1, chapter2) }));
+  } });
+  try {
+    await loadFirst(app);
+    app.w.document.querySelector('section[aria-label="Điều khiển giọng đọc"] input[type="checkbox"]').click();
+    await until(() => waiting.length > 0);
+    app.click('Nghe truyện'); await until(() => app.synthesis.current);
+    app.synthesis.finish(); await wait(20); app.synthesis.finish(); await wait(20); app.synthesis.finish();
+    await until(() => app.w.document.body.textContent.includes('Đang chuẩn bị chương tiếp'));
+    app.w.document.querySelector('button[aria-label="Dừng đọc"]').click(); await wait(20);
+    const calls = app.synthesis.calls.length; waiting.forEach(resolve => resolve()); await wait(50);
+    assert.equal(app.synthesis.calls.length, calls); assert.equal(app.synthesis.current, null);
+    assert.match(app.w.document.querySelector('article').textContent, /Chương 1: Bản gốc/);
+    assert.equal(app.w.document.querySelector('section[aria-label="Điều khiển giọng đọc"] input[type="checkbox"]').checked, false);
+  } finally { app.close(); }
+});
+
+test('reopening the active chapter from the library resumes the stored audio time', async () => {
+  const app = mount({ fetcher: remoteResponse });
+  try {
+    await loadFirst(app); await chooseEdge(app); app.click('Nghe truyện'); await until(() => app.audio[0]?.playing);
+    app.audio[0].currentTime = 3.5; app.click('Tạm dừng'); await wait(20);
+    app.click('Thư viện'); await until(() => app.w.document.querySelector('.book-card'));
+    app.w.document.querySelector('.book-card').click(); await until(() => app.w.document.querySelector('.chapter-catalog button'));
+    app.w.document.querySelector('.chapter-catalog button').click(); await until(() => !app.w.document.querySelector('[role="dialog"]'));
+    app.click('Nghe truyện'); await until(() => app.audio[0]?.playing); assert.equal(app.audio[0].currentTime, 3.5);
   } finally { app.close(); }
 });

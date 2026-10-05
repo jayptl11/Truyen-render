@@ -17,7 +17,7 @@ test('Edge selector fits a small phone and real audio pauses and resumes without
   await page.setViewportSize({ width: 320, height: 640 });
   await page.addInitScript(() => {
     const NativeAudio = window.Audio;
-    window.Audio = function () { const audio = new NativeAudio(); window.testTtsAudio = audio; return audio; };
+    window.Audio = function () { const audio = new NativeAudio(); audio.addEventListener('play', () => { window.testTtsAudio = audio; }); return audio; };
   });
   let posts = 0;
   await page.route('**/api/tts', async route => {
@@ -98,8 +98,8 @@ test('Edge buffers slow synthesis and switches manually and automatically withou
     const NativeAudio = window.Audio;
     window.bufferedPlaybackEvents = [];
     window.Audio = function () {
-      const audio = new NativeAudio(); window.bufferedTestAudio = audio;
-      audio.addEventListener('playing', () => window.bufferedPlaybackEvents.push(performance.now()));
+      const audio = new NativeAudio(); audio.addEventListener('play', () => { window.bufferedTestAudio = audio; });
+      audio.addEventListener('playing', () => { if (window.lastBufferedSource !== audio.src) { window.lastBufferedSource = audio.src; window.bufferedPlaybackEvents.push(performance.now()); } });
       audio.addEventListener('ended', () => { window.transitionStarted = performance.now(); });
       return audio;
     };
@@ -142,7 +142,7 @@ test('Edge reads eleven parts through the rolling buffer and recovers from two H
   await page.addInitScript(() => {
     const NativeAudio = window.Audio; window.longSpeechSources = [];
     window.Audio = function () {
-      const audio = new NativeAudio(); window.longSpeechAudio = audio;
+      const audio = new NativeAudio(); audio.addEventListener('play', () => { window.longSpeechAudio = audio; });
       audio.addEventListener('playing', () => {
         if (window.longSpeechSources.at(-1) !== audio.src) window.longSpeechSources.push(audio.src);
       });

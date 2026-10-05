@@ -1,0 +1,96 @@
+{
+  "date": "2026-10-05",
+  "scope": "Local cloud instance; Vite API + built frontend; not a verified Vercel deployment.",
+  "regression": {
+    "build": "passed",
+    "lint": "passed",
+    "node": {
+      "passed": 57
+    },
+    "python": {
+      "passed": 8
+    },
+    "chromium_dev": {
+      "passed": 28,
+      "skipped": 1,
+      "skipReason": "Service worker is production-only"
+    },
+    "chromium_production": {
+      "passed": 14
+    },
+    "firefox_tts": {
+      "passed": 8
+    }
+  },
+  "realEdge": {
+    "voiceCatalogCount": 322,
+    "upstream": "Microsoft Read Aloud via pip edge-tts 7.2.8; actual MP3 decoded by real Chromium/Firefox",
+    "storyContent": "Three generated chapters supplied as fixtures; story fetch is not measured by this test.",
+    "mode": "Accelerated by seeking near the end of each part; not continuous 30-minute listening.",
+    "bufferedGaps": "Browser event timing when the next clip is ready; not an acoustic measurement or a guarantee under slow network/CPU.",
+    "runs": [
+      {
+        "browser": "chromium",
+        "rate": 1.5,
+        "accelerated": true,
+        "elapsedSeconds": 177,
+        "played": 120,
+        "chapters": 3,
+        "upstreamRequests": 121,
+        "upstreamFailures": 0,
+        "result": "passed",
+        "bufferedTransitionSamples": 0,
+        "gapMeasurement": "accelerated stress; no buffered transition sample recorded"
+      },
+      {
+        "browser": "firefox",
+        "rate": 2,
+        "accelerated": true,
+        "elapsedSeconds": 170,
+        "played": 120,
+        "chapters": 3,
+        "upstreamRequests": 121,
+        "upstreamFailures": 0,
+        "result": "passed",
+        "bufferedTransitionSamples": 0,
+        "gapMeasurement": "accelerated stress; no buffered transition sample recorded"
+      },
+      {
+        "browser": "chromium",
+        "rate": 1,
+        "accelerated": true,
+        "elapsedSeconds": 167,
+        "played": 120,
+        "chapters": 3,
+        "upstreamRequests": 121,
+        "upstreamFailures": 0,
+        "result": "passed",
+        "bufferedGapP95Ms": 87,
+        "bufferedGapMaxMs": 200,
+        "bufferedTransitionSamples": 119,
+        "gapMeasurement": "ended to next unique audio playing event, after prepared audio readyState >= 3"
+      },
+      {
+        "browser": "firefox",
+        "rate": 1.5,
+        "accelerated": true,
+        "elapsedSeconds": 189,
+        "played": 120,
+        "chapters": 3,
+        "upstreamRequests": 121,
+        "upstreamFailures": 0,
+        "result": "passed",
+        "bufferedGapP95Ms": 119,
+        "bufferedGapMaxMs": 193,
+        "bufferedTransitionSamples": 119,
+        "gapMeasurement": "ended to next unique audio playing event, after prepared audio readyState >= 3"
+      }
+    ]
+  },
+  "pending": [
+    "30-minute continuous Edge playback on Vercel at rates 1, 1.5 and 2 in Chromium and Firefox",
+    "Safari/iOS and physical mobile devices, including autoplay, background and lock-screen behavior",
+    "Webnovel extraction and Python cold starts on the user's Vercel deployment",
+    "Real Piper model download and neural synthesis"
+  ]
+}

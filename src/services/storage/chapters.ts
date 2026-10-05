@@ -18,7 +18,7 @@ export function upsertChapter(chapters: Chapter[], item: Chapter): Chapter[] {
   const merged = previous && previous.content === item.content && !item.translatedContent
     ? { ...item, translatedContent: previous.translatedContent, translationType: previous.translationType }
     : item;
-  return [merged, ...chapters.filter(chapter => chapter.url !== item.url)].slice(0, 500);
+  return [merged, ...chapters.filter(chapter => chapter.url !== item.url)];
 }
 export function createChapter(id: string, data: StoryContent, translation = '', style?: Chapter['translationType']): Chapter {
   let webName = 'Văn bản nhập tay';

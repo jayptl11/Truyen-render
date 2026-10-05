@@ -71,6 +71,14 @@ export function useTtsReader(options: SpeechOptions) {
     current.play(start);
   };
   return { ...device, ...current, supported: audioProvider || device.supported,
+    phase: audioProvider ? audio.phase : device.status,
+    seconds: audioProvider ? audio.seconds : 0, duration: audioProvider ? audio.duration : 0,
+    bufferedSeconds: audioProvider ? audio.bufferedSeconds : 0,
+    prepareChapter: audio.prepareChapter, queueChapter: audio.queueChapter,
+    seekSeconds: audio.seekSeconds, selectedVoice: audioProvider ? chosen : undefined,
+    canCacheAudio: audioProvider,
+    prepareDownload: audio.prepareDownload,
+    restorePosition: (paragraph: number) => { device.selectParagraph(paragraph); audio.restorePosition(paragraph); },
     voices: filteredVoices, voiceURI: chosen?.id || '', setVoice, play,
     provider: selection.provider, setProvider, language, languages, setLanguage,
     gender: selection.gender, genders: [...new Set(languageVoices.map(v => v.gender))], setGender,

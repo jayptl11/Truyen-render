@@ -23,7 +23,7 @@ test('eSpeak synthesizes Vietnamese WAV locally, pauses, and reads the next para
       return worker;
     };
     const NativeAudio = window.Audio;
-    window.Audio = function () { const audio = new NativeAudio(); window.localTestAudio = audio; return audio; };
+    window.Audio = function () { const audio = new NativeAudio(); audio.addEventListener('play', () => { window.localTestAudio = audio; }); return audio; };
     const create = URL.createObjectURL.bind(URL);
     URL.createObjectURL = function (blob) { window.localTestBlob = blob; return create(blob); };
   });
@@ -33,14 +33,14 @@ test('eSpeak synthesizes Vietnamese WAV locally, pauses, and reads the next para
   await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
   await page.getByRole('button', { name: 'Nghe truyện', exact: true }).click();
   await expect.poll(() => page.evaluate(() => window.localTestAudio?.currentTime || 0), { timeout: 20000 }).toBeGreaterThan(0.1);
+  await page.getByRole('button', { name: 'Tạm dừng', exact: true }).click();
+  expect(await page.evaluate(() => window.localTestAudio.paused)).toBe(true);
   await expect.poll(() => page.evaluate(() => window.localWorkerResults)).toBe(2);
   const generated = await page.evaluate(async () => {
     const buffer = await window.localTestBlob.arrayBuffer();
     return { size: buffer.byteLength, header: new TextDecoder().decode(buffer.slice(0, 4)), type: window.localTestBlob.type };
   });
   expect(generated.header).toBe('RIFF'); expect(generated.size).toBeGreaterThan(1000); expect(generated.type).toBe('audio/wav');
-  await page.getByRole('button', { name: 'Tạm dừng', exact: true }).click();
-  expect(await page.evaluate(() => window.localTestAudio.paused)).toBe(true);
   await context.setOffline(true);
   await page.getByRole('button', { name: 'Đoạn sau', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Tiếp tục nghe', exact: true })).toBeVisible();

@@ -2,10 +2,16 @@ import { SearchDialog } from './features/reader/SearchDialog';
 import { StatsDialog } from './features/reader/StatsDialog';
 import { FocusReader } from './features/reader/FocusReader';
 import { DiagnosticsDialog } from './features/diagnostics/DiagnosticsDialog';
+import { PwaStatus } from './app/PwaStatus';
 import { AppShell } from './app/AppShell';
 import { SourcePanel } from './features/reader/SourcePanel';
 import { ReaderToolbar } from './features/reader/ReaderToolbar';
 import { AppearanceDialog } from './features/settings/AppearanceDialog';
+import { useBooks } from './features/library/useBooks';
+import { localBooks } from './services/storySources/books';
+import { downloadChapterAudio } from './services/tts/download';
+import { usePlaybackIntegration } from './features/tts/usePlaybackIntegration';
+import { CompactPlayer, ExpandedPlayer } from './features/tts/ListeningPlayer';
 import { useChapterLibrary } from './features/library/useChapterLibrary';
 import { useChapterPreload } from './features/reader/useChapterPreload';
 import { useReadingStats } from './features/reader/useReadingStats';
@@ -37,7 +43,7 @@ export default function StoryFetcher() {
   const [translatedContent, setTranslatedContent] = useState('');
 
   const [activeChapterId, setActiveChapterId] = useState('');
-  const [readerVersion, setReaderVersion] = useState<'original' | 'translated'>('original');
+  const [readerVersion, setReaderVersion] = useState<'original' | 'translated'>(() => storage.getItem('reader_last_version') === 'translated' ? 'translated' : 'original');
   const [autoTranslate, setAutoTranslate] = useState(false);
   const [pendingPlay, setPendingPlay] = useState(false);
   const [bookmarkPosition, setBookmarkPosition] = useState<number | null>(null);
@@ -47,6 +53,7 @@ export default function StoryFetcher() {
   const initialParagraph = useMemo(() => bookmarkPosition ?? readProgress(activeChapterId, readerVersion), [activeChapterId, readerVersion, bookmarkPosition]);
   const loadController = useRef<AbortController | null>(null);
   const requestEpoch = useRef(0);
+  const handingOff = useRef(false);
 
   const [nextChapterUrl, setNextChapterUrl] = useState<string | null>(null);
   const [prevChapterUrl, setPrevChapterUrl] = useState<string | null>(null);
@@ -99,6 +106,9 @@ export default function StoryFetcher() {
   // --- CACHE STATE ---
   const library = useChapterLibrary();
   const chapters = library.chapters;
+  const bookLibrary = useBooks();
+  const books = useMemo(() => localBooks(chapters, bookLibrary.books), [chapters, bookLibrary.books]);
+  const [showPlayer, setShowPlayer] = useState(false);
   const [showCache, setShowCache] = useState(false);
 
 
@@ -383,19 +393,19 @@ export default function StoryFetcher() {
       url: nextChapterUrl, style: translationStyle, translateEnabled: autoTranslate, chapters: chapters,
       translate: fetchTranslation,
       onChapter: library.add,
-      onError: message => { setError(message); setIsAutoMode(false); },
+      onError: message => { setError(message); },
   });
   const preloadedData = preload.chapter;
 
   // --- HANDLERS ---
 
   const loadChapter = async (targetUrl: string, isAutoNav = false) => {
-      setBookmarkPosition(null);
+      setBookmarkPosition(null); handingOff.current = isAutoNav;
       if (isAutoNav && autoStopChapterLimit > 0 && chaptersReadCount + 1 >= autoStopChapterLimit) {
-          setIsAutoMode(false); speech.stop(); return;
+          setIsAutoMode(false); rawSpeech.stop(); return;
       }
       if (isAutoNav) setChaptersReadCount(previous => previous + 1);
-      speech.stop();
+      if (isAutoNav) rawSpeech.prepareChapter(); else rawSpeech.stop();
       const cached = chapters.find(chapter => chapter.url === targetUrl) || (preloadedData?.url === targetUrl ? preloadedData : null);
       if (cached) {
           loadController.current?.abort();
@@ -407,7 +417,9 @@ export default function StoryFetcher() {
           setContent(cached.content); setTranslatedContent(cached.translatedContent);
           setNextChapterUrl(cached.nextUrl); setPrevChapterUrl(cached.prevUrl);
           const useTranslation = autoTranslate || readerVersion === 'translated';
-          setReaderVersion(useTranslation && cached.translatedContent ? 'translated' : 'original');
+          const nextVersion = useTranslation && cached.translatedContent ? 'translated' : 'original';
+          setReaderVersion(nextVersion);
+          if (!isAutoNav && targetUrl === activeChapterId && nextVersion === readerVersion) rawSpeech.restorePosition(readProgress(targetUrl, nextVersion));
           setMobileTab('reader');
           if (autoTranslate && (!cached.translatedContent || cached.translationType !== translationStyle)) {
               setTranslating(true);
@@ -426,11 +438,30 @@ export default function StoryFetcher() {
       await fetchContent(targetUrl, isAutoNav);
   };
 
-  const speech = useTtsReader({ paragraphs: chunks, contentKey, initialParagraph,
+  const rawSpeech = useTtsReader({ paragraphs: chunks, contentKey, initialParagraph,
       onParagraph: paragraph => saveProgress(activeChapterId, readerVersion, paragraph),
       onComplete: () => { reading.complete(); if (isAutoMode && nextChapterUrl) void loadChapter(nextChapterUrl, true); },
   });
+  const stopSession = rawSpeech.stop;
+  const stopListening = useCallback(() => {
+      stopSession(); setPendingPlay(false); listenEnabled.current = false; setIsAutoMode(false);
+      if (handingOff.current) { requestEpoch.current++; loadController.current?.abort(); setLoading(false); setTranslating(false); }
+      handingOff.current = false;
+  }, [stopSession]);
+  const waitingForChapter = handingOff.current && (loading || translating || pendingPlay);
+  const speech = { ...rawSpeech, ...(waitingForChapter ? { status: 'playing' as const, phase: 'preparing' as const, loading: true, loadingMessage: 'Đang chuẩn bị chương tiếp…' } : {}),
+      stop: stopListening, toggle: () => { if (waitingForChapter) stopListening(); else rawSpeech.toggle(); } };
   const { paragraph: speechParagraph, play: playSpeech, stop: stopSpeech } = speech;
+  usePlaybackIntegration(speech, chunks[0] || '', books.find(book => book.chapters.some(chapter => chapter.url === activeChapterId)),
+    prevChapterUrl ? () => { void loadChapter(prevChapterUrl); } : undefined,
+    nextChapterUrl ? () => { void loadChapter(nextChapterUrl); } : undefined);
+  const queueChapter = speech.queueChapter;
+  useEffect(() => {
+      const translated = (autoTranslate || readerVersion === 'translated') && !!preloadedData?.translatedContent;
+      const text = preloadedData ? translated ? preloadedData.translatedContent : preloadedData.content : '';
+      queueChapter(preloadedData ? `${preloadedData.url}:${translated ? 'translated' : 'original'}` : '', text.replace(/\*\*/g, '').split(/\n+/).map(line => line.trim()).filter(Boolean));
+  }, [preloadedData, autoTranslate, readerVersion, queueChapter]);
+
   useEffect(() => {
       if (timeLeft === null) return;
       if (timeLeft <= 0) { stopSpeech(); setIsAutoMode(false); setPendingPlay(false); setTimeLeft(null); return; }
@@ -443,12 +474,22 @@ export default function StoryFetcher() {
       const index = chunkRefs.current.findIndex(element => element && element.getBoundingClientRect().bottom > top + 30);
       if (index >= 0) saveProgress(activeChapterId, readerVersion, index);
   };
+  const restored = useRef(false);
+  useEffect(() => {
+      if (activeChapterId) { storage.setItem('reader_last_chapter', activeChapterId); storage.setItem('reader_last_version', readerVersion); }
+  }, [activeChapterId, readerVersion]);
+  useEffect(() => {
+      if (!library.ready || restored.current) return;
+      restored.current = true;
+      const id = storage.getItem('reader_last_chapter');
+      if (!activeChapterId && id && chapters.some(chapter => chapter.url === id)) void loadChapter(id);
+  }, [library.ready, chapters, activeChapterId]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
       chunkRefs.current[speechParagraph]?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
   }, [speechParagraph, contentKey]);
   useEffect(() => {
       if (pendingPlay && !loading && !translating && chunks.length) {
-          setPendingPlay(false); playSpeech(0);
+          setPendingPlay(false); handingOff.current = false; playSpeech(0);
       }
   }, [pendingPlay, loading, translating, chunks, playSpeech]);
   useEffect(() => {
@@ -511,7 +552,7 @@ export default function StoryFetcher() {
     const fromUrl = !!overrideUrl || inputMode === 'url';
     if (fromUrl && !urlToFetch.trim()) { setError('Vui lòng nhập liên kết chương truyện.'); return; }
     if (!fromUrl && !content.trim()) { setError('Vui lòng dán nội dung.'); return; }
-    setBookmarkPosition(null); speech.stop(); loadController.current?.abort();
+    setBookmarkPosition(null); if (continueListening) rawSpeech.prepareChapter(); else rawSpeech.stop(); loadController.current?.abort();
     const controller = new AbortController(); loadController.current = controller;
     const epoch = ++requestEpoch.current;
     setLoading(true); setTranslating(false); setError(''); setPendingPlay(false);
@@ -587,7 +628,7 @@ export default function StoryFetcher() {
           status={isAutoMode && nextChapterUrl ? preloadedData ? 'Chương sau đã sẵn sàng' : 'Đang tải trước chương sau' : readerVersion === 'translated' ? 'Đang đọc bản dịch' : content ? 'Đang đọc bản gốc' : ''}
           onBookmark={toggleBookmark} onBookmarks={() => setShowBookmarks(true)} onSearch={() => setShowSearch(true)} onExport={() => setShowExportMenu(true)}
           onFocus={() => setZenMode(true)} onAppearance={() => setShowAppearance(true)} onSettings={() => setShowMobileSettings(true)} />}
-        footer={<SpeechControls speech={speech} count={chunks.length} autoNext={isAutoMode} onAutoNext={() => { setIsAutoMode(!isAutoMode); setChaptersReadCount(0); }} />}
+        footer={<SpeechControls onExpand={() => setShowPlayer(true)} speech={speech} count={chunks.length} autoNext={isAutoMode} onAutoNext={() => { setIsAutoMode(!isAutoMode); setChaptersReadCount(0); }} />}
       >
         {error && <p role="alert" className="reader-message inline-message">{error}</p>}
              {/* AI Analysis Result Panel */}
@@ -604,6 +645,7 @@ export default function StoryFetcher() {
              )}
       </ReaderView>}>
 
+      <PwaStatus/>
       {/* --- MODALS & MENUS --- */}
 
       {showAppearance && <AppearanceDialog theme={theme} fontSize={fontSize} onTheme={changeTheme} onFontSize={changeFontSize} onClose={() => setShowAppearance(false)} />}
@@ -625,9 +667,20 @@ export default function StoryFetcher() {
       {showBatchPanel && <BatchDialog batch={batch} initialUrl={url} hasKeys={hasAnyTranslationKey()} onClose={() => setShowBatchPanel(false)} onConfigure={() => { setShowBatchPanel(false); setShowApiKeyInput(true); setMobileTab('input'); }} />}
 
       {showCache && <LibraryDialog chapters={chapters} selected={selectedChaptersForDelete}
+        books={books} onBook={bookLibrary.save} onRemoveBook={book => { bookLibrary.remove(book.id); library.remove(book.chapters.map(chapter => chapter.url)); }}
+        onChapter={library.add} activeChapter={activeChapterId} canDownloadAudio={!!speech.selectedVoice && speech.canCacheAudio}
+        onDownloadAudio={async (chapter, signal) => {
+          if (!speech.selectedVoice || !speech.canCacheAudio) throw new Error('Chọn Edge, Piper hoặc eSpeak trước khi tải âm thanh.');
+          speech.prepareDownload();
+          await downloadChapterAudio(chapter, speech.provider as 'edge' | 'piper' | 'espeak', speech.selectedVoice, signal);
+        }}
+        player={speech.status !== 'idle' && <CompactPlayer speech={speech} title={chunks[0] || ''} onOpen={() => { setShowCache(false); setMobileTab('reader'); }} onExpand={() => { setShowCache(false); setShowPlayer(true); }}/>}
+
         onToggle={toggleChapterForDelete} onSelectAll={selectAllChaptersForDelete} onDelete={deleteSelectedChapters}
-        onClear={() => { if (window.confirm('Xóa toàn bộ thư viện trên thiết bị này?')) { library.clear(); setSelectedChaptersForDelete([]); } }}
+        onClear={() => { if (window.confirm('Xóa toàn bộ thư viện trên thiết bị này?')) { library.clear(); bookLibrary.books.forEach(book => bookLibrary.remove(book.id)); setSelectedChaptersForDelete([]); } }}
         onOpen={id => { void loadChapter(id); setShowCache(false); }} onClose={() => setShowCache(false)} />}
+      {mobileTab === 'input' && !showCache && speech.status !== 'idle' && <CompactPlayer speech={speech} title={chunks[0] || ''} floating onOpen={() => setMobileTab('reader')} onExpand={() => setShowPlayer(true)}/>}
+      {showPlayer && <ExpandedPlayer speech={speech} title={chunks[0] || ''} count={chunks.length} autoNext={isAutoMode} onAutoNext={() => setIsAutoMode(!isAutoMode)} onClose={() => setShowPlayer(false)} previous={prevChapterUrl ? () => { void loadChapter(prevChapterUrl); } : undefined} next={nextChapterUrl ? () => { void loadChapter(nextChapterUrl); } : undefined} onSettings={() => { setShowPlayer(false); setShowMobileSettings(true); }}/ >}
       {showBookmarks && <BookmarkDialog bookmarks={bookmarks} onLoad={bookmark => { void loadBookmark(bookmark); }} onRemove={removeBookmark}
         onClear={() => { setBookmarks([]); storage.removeItem('reader_bookmarks'); }} onClose={() => setShowBookmarks(false)} />}
 
@@ -639,7 +692,7 @@ export default function StoryFetcher() {
 
       {showStats && <StatsDialog stats={readingStats} onClear={reading.clear} onClose={() => setShowStats(false)} />}
       {zenMode && content && <FocusReader paragraphs={chunks} fontSize={fontSize} onFontSize={changeFontSize} onClose={() => setZenMode(false)}
-        footer={<SpeechControls speech={speech} count={chunks.length} autoNext={isAutoMode} onAutoNext={() => { setIsAutoMode(!isAutoMode); setChaptersReadCount(0); }} />} />}
+        footer={<SpeechControls onExpand={() => setShowPlayer(true)} speech={speech} count={chunks.length} autoNext={isAutoMode} onAutoNext={() => { setIsAutoMode(!isAutoMode); setChaptersReadCount(0); }} />} />}
 
     </AppShell>
   );

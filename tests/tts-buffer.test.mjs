@@ -91,10 +91,10 @@ test('Edge retries transient interruptions with fresh deadlines and shares retri
   buffer.prefetch([segment('four')]);
   const task = buffer.get(segment('four'), message => messages.push(message));
   calls[0].reject(new DOMException('timed out', 'TimeoutError'));
-  await new Promise(resolve => setTimeout(resolve, 10));
+  for (let attempt = 0; calls.length < 2 && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
   assert.equal(calls.length, 2); assert.notEqual(calls[0].signal, calls[1].signal);
   calls[1].reject(new TypeError('connection reset'));
-  await new Promise(resolve => setTimeout(resolve, 10));
+  for (let attempt = 0; calls.length < 3 && attempt < 100; attempt++) await new Promise(resolve => setTimeout(resolve, 10));
   calls[2].resolve(audio()); await task;
   assert.equal(calls.length, 3); assert.match(messages[0], /2\/3/); assert.match(messages[1], /3\/3/);
   buffer.clear();

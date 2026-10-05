@@ -67,9 +67,9 @@ for (const [width, height] of sizes) {
     await expectNoOverflow(page);
     await page.screenshot({ path: info.outputPath(`reader-${width}.png`) });
     await page.getByRole('navigation', { name: 'Điều hướng chính' }).getByRole('button', { name: 'Thư viện', exact: true }).click();
-    await expectInViewport(page.getByRole('dialog', { name: 'Thư viện chương' }), page);
+    await expectInViewport(page.getByRole('dialog', { name: 'Thư viện' }), page);
     await expectNoOverflow(page);
-    await page.getByRole('button', { name: 'Đóng Thư viện chương', exact: true }).click();
+    await page.getByRole('button', { name: 'Đóng Thư viện', exact: true }).click();
     await page.getByRole('navigation', { name: 'Điều hướng chính' }).getByRole('button', { name: 'Cài đặt', exact: true }).click();
     await expectInViewport(page.getByRole('dialog', { name: 'Cài đặt đọc và nghe' }), page);
     await expectNoOverflow(page);
@@ -107,11 +107,11 @@ test('mobile keyboard viewport resizes source and dialog without covering input'
   await expectInViewport(page.getByRole('button', { name: 'Lấy nội dung truyện', exact: true }), page);
   await page.evaluate(() => { window.mockViewport.height = 844; window.mockViewport.dispatchEvent(new Event('resize')); });
   await page.getByRole('navigation', { name: 'Điều hướng chính' }).getByRole('button', { name: 'Thư viện', exact: true }).click();
-  await page.getByRole('textbox', { name: 'Tìm trong thư viện' }).focus();
+  await page.getByRole('textbox', { name: 'Tìm truyện trong thư viện' }).focus();
   await page.evaluate(() => { window.mockViewport.height = 420; window.mockViewport.dispatchEvent(new Event('resize')); });
   const box = await page.getByRole('dialog').boundingBox();
   expect(box.y + box.height).toBeLessThanOrEqual(420);
-  await expect(page.getByRole('textbox', { name: 'Tìm trong thư viện' })).toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Tìm truyện trong thư viện' })).toBeVisible();
 });
 
 test('large text and very long strings do not cause horizontal overflow', async ({ page }) => {

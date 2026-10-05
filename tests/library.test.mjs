@@ -1,0 +1,63 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { buildSync } from 'esbuild';
+import { IDBFactory } from 'fake-indexeddb';
+import { JSDOM } from 'jsdom';
+import { readFileSync } from 'node:fs';
+const compile = entry => buildSync({ entryPoints: [entry], bundle: true, format: 'esm', write: false }).outputFiles[0].text;
+const load = async entry => import(`data:text/javascript;base64,${Buffer.from(compile(entry)).toString('base64')}`);
+test('migration is atomic and repeatable, preserving translations and the legacy recovery backup', async () => {
+  globalThis.indexedDB = new IDBFactory();
+  const values = new Map(); globalThis.localStorage = { getItem: key => values.get(key) || null, setItem: (key, value) => values.set(key, value) };
+  globalThis.window = new EventTarget();
+  const legacy = [{ url: 'https://example.com/chapter-1', title: 'Chương 1', content: 'Bản gốc', translatedContent: 'Bản dịch', timestamp: 1 }];
+  values.set('reader_translated_cache', JSON.stringify(legacy));
+  values.set('reader_progress', JSON.stringify({ 'chapter-1:original': { chapterId: 'chapter-1', version: 'original', paragraph: 3 } }));
+  values.set('reader_bookmarks', '[{"url":"chapter-1","chunkIndex":3}]');
+  const db = await load('src/services/storage/database.ts');
+  const migrated = await db.migrateLibrary();
+  assert.equal(migrated[0].translatedContent, 'Bản dịch');
+  assert.equal((await db.getRecord('positions', 'chapter-1:original')).paragraph, 3);
+  assert.equal((await db.getRecord('meta', 'legacy-v1')).chapters, 1);
+  await db.writeRecords('chapters', [{ ...migrated[0], translatedContent: 'Bản dịch mới' }]);
+  assert.equal((await db.migrateLibrary())[0].translatedContent, 'Bản dịch mới');
+  assert.deepEqual(JSON.parse(values.get('reader_translated_cache')), legacy);
+  assert.ok(values.has('reader_bookmarks'));
+  await assert.rejects(db.writeRecords('chapters', [{ content: 'Invalid, missing URL' }], [legacy[0].url]));
+  assert.equal((await db.getRecords('chapters')).length, 1);
+  (await db.openDatabase()).close();
+  delete globalThis.indexedDB; delete globalThis.localStorage; delete globalThis.window;
+});
+test('Webnovel adapter extracts real book metadata and advances the paginated catalog', async () => {
+  const dom = new JSDOM(); globalThis.DOMParser = dom.window.DOMParser;
+  const source = await load('src/services/storySources/books.ts');
+  const book = source.parseBook(readFileSync('tests/fixtures/webnovel-book.html', 'utf8'), 'https://webnovel.vn/tien-nghich/');
+  assert.equal(book.id, 'https://webnovel.vn/tien-nghich/'); assert.equal(book.title, 'Tiên Nghịch'); assert.equal(book.author, 'Nhĩ Căn');
+  assert.equal(book.chapters[0].url, 'https://webnovel.vn/tien-nghich/chuong-1/');
+  assert.match(book.chapters[0].title, /Chương 1: Xa nhà/); assert.equal(book.catalogNext, 'https://webnovel.vn/tien-nghich/2/');
+  const merged = source.mergeCatalog(book, { ...book, chapters: [...book.chapters, { url: 'https://webnovel.vn/tien-nghich/chuong-51/', title: 'Chương 51', index: 51 }], catalogNext: null });
+  assert.equal(merged.chapters.length, book.chapters.length + 1); assert.equal(merged.catalogNext, null);
+  const standalone = { url: 'manual:one', content: 'Text', title: 'Manual', webName: 'Văn bản', timestamp: 2 };
+  assert.equal(source.localBooks([standalone], [book]).length, 2);
+  assert.throws(() => source.parseBook('<h1>Not a book</h1>', book.id), /Không tìm thấy mục lục/);
+  dom.window.close(); delete globalThis.DOMParser;
+});
+test('chapter history no longer silently drops content after 500 entries', async () => {
+  const { upsertChapter } = await load('src/services/storage/chapters.ts');
+  const chapters = Array.from({ length: 600 }, (_, index) => ({ url: `manual:${index}`, content: String(index) }));
+  assert.equal(upsertChapter(chapters, { url: 'manual:new', content: 'New' }).length, 601);
+});
+
+test('offline audio evicts unpinned clips, protects pinned clips and reports capacity without losing saved data', async () => {
+  globalThis.indexedDB = new IDBFactory();
+  const cache = await load('src/services/storage/audioCache.ts');
+  const blob = new Blob([new Uint8Array(31 * 1024 * 1024)], { type: 'audio/wav' });
+  await cache.storeAudio('a', blob); await cache.storeAudio('b', blob, true); await cache.storeAudio('c', blob);
+  assert.equal(await cache.cachedAudio('a'), undefined); assert.equal((await cache.cachedAudio('b')).size, blob.size);
+  await cache.storeAudio('c', blob, true);
+  await assert.rejects(cache.storeAudio('d', blob, true), /80 MB/);
+  const info = await cache.audioStorageInfo(); assert.equal(info.count, 2); assert.equal(info.pinned, 2); assert.equal(info.bytes, blob.size * 2);
+  assert.notEqual(await cache.audioCacheId('voice-a'), await cache.audioCacheId('voice-b'));
+  await cache.clearAudioCache(); assert.equal((await cache.audioStorageInfo()).count, 0);
+  delete globalThis.indexedDB;
+});

@@ -27,3 +27,9 @@ export interface ReadingProgress {
   version: ReaderVersion;
   paragraph: number;
 }
+
+export interface ChapterReference { url: string; title: string; index: number }
+export interface Book {
+  id: string; title: string; source: string; author: string; cover: string; description: string;
+  chapters: ChapterReference[]; catalogNext: string | null; updated: number;
+}

@@ -1,8 +1,10 @@
 import type { AudioProvider, TtsVoice } from '../../types/tts';
 import { SpeechRequestError } from './errors';
+import { audioCacheId, cachedAudio, storeAudio } from '../storage/audioCache';
 
 let worker: Worker | null = null;
 let sequence = 0;
+let localQueue: Promise<unknown> = Promise.resolve();
 export function releaseLocalTts() { worker?.terminate(); worker = null; }
 async function localAudio(provider: AudioProvider, text: string, voice: TtsVoice, signal: AbortSignal, progress: (message: string) => void): Promise<Blob> {
   signal.throwIfAborted();
@@ -24,8 +26,11 @@ async function localAudio(provider: AudioProvider, text: string, voice: TtsVoice
     active.postMessage({ id, provider, text, voice: voice.id });
   });
 }
-export async function synthesizeAudio(provider: AudioProvider, text: string, voice: TtsVoice, signal: AbortSignal, progress: (message: string) => void): Promise<Blob> {
-  if (provider !== 'edge') return localAudio(provider, text, voice, signal, progress);
+async function generateAudio(provider: AudioProvider, text: string, voice: TtsVoice, signal: AbortSignal, progress: (message: string) => void): Promise<Blob> {
+  if (provider !== 'edge') {
+    const task = localQueue.catch(() => {}).then(() => { signal.throwIfAborted(); return localAudio(provider, text, voice, signal, progress); });
+    localQueue = task; return task;
+  }
   progress('Đang chuẩn bị giọng Edge…');
   const response = await fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ voice: voice.id, language: voice.language, text }), signal });
@@ -34,4 +39,15 @@ export async function synthesizeAudio(provider: AudioProvider, text: string, voi
     throw new SpeechRequestError(failure?.error || `Không tạo được giọng Edge (HTTP ${response.status}).`, response.status);
   }
   return response.blob();
+}
+export async function synthesizeAudio(provider: AudioProvider, text: string, voice: TtsVoice, signal: AbortSignal, progress: (message: string) => void): Promise<Blob> {
+  signal.throwIfAborted();
+  const id = typeof indexedDB !== 'undefined' && crypto.subtle ? await audioCacheId(JSON.stringify([provider, voice.id, voice.language, text])) : undefined;
+  const saved = id ? await cachedAudio(id) : undefined;
+  signal.throwIfAborted();
+  if (saved) return saved;
+  const blob = await generateAudio(provider, text, voice, signal, progress);
+  signal.throwIfAborted();
+  if (id && blob.size && /^audio\//.test(blob.type)) void storeAudio(id, blob).catch(() => {});
+  return blob;
 }

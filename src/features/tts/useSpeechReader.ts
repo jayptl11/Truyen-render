@@ -2,21 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { readJson, writeJson } from '../../services/storage/local';
 
 export type SpeechStatus = 'idle' | 'playing' | 'paused';
-/** Short utterances avoid browser limits on long chapters. Paragraph indices stay stable. */
-export function splitSpeechText(text: string, limit = 240): string[] {
-  const parts: string[] = [];
-  let rest = text.trim();
-  while (rest.length > limit) {
-    const sample = rest.slice(0, limit + 1);
-    const punctuation = Math.max(sample.lastIndexOf('. '), sample.lastIndexOf('! '), sample.lastIndexOf('? '), sample.lastIndexOf('; '));
-    const boundary = punctuation > limit / 3 ? punctuation + 1 : sample.lastIndexOf(' ');
-    const cut = boundary > 0 ? boundary : limit;
-    parts.push(rest.slice(0, cut).trim());
-    rest = rest.slice(cut).trim();
-  }
-  if (rest) parts.push(rest);
-  return parts;
-}
+import { splitSpeechText } from '../../engine/playback/segments';
+export { splitSpeechText } from '../../engine/playback/segments';
 
 export interface SpeechOptions {
   paragraphs: string[];

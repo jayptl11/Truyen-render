@@ -16,6 +16,9 @@ export function speechSegmentKey(segment: SpeechSegment): string {
 // One synthesis at a time also protects the shared Piper/eSpeak worker from
 // overlapping inference. Keep only a small, memory-bounded cache per chapter.
 export class SpeechAudioBuffer {
+  private listeners = new Set<() => void>();
+  subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
+  peek(segment: SpeechSegment): Blob | undefined { return this.ready.get(speechSegmentKey(segment)); }
   private synthesize: Synthesizer;
   private ready = new Map<string, Blob>();
   private bytes = 0;
@@ -23,8 +26,10 @@ export class SpeechAudioBuffer {
   private queue: Job[] = [];
   private active: Job | null = null;
   private retryDelays: readonly number[];
-  constructor(synthesize: Synthesizer, retryDelays: readonly number[] = [1000, 2000]) {
+  private limits: { entries: number; bytes: number };
+  constructor(synthesize: Synthesizer, retryDelays: readonly number[] = [1000, 2000], limits = { entries: 8, bytes: 12 * 1024 * 1024 }) {
     this.synthesize = synthesize; this.retryDelays = retryDelays;
+    this.limits = limits;
   }
 
   get(segment: SpeechSegment, progress: Progress): Promise<Blob> {
@@ -113,11 +118,12 @@ export class SpeechAudioBuffer {
       if (this.active !== job) return;
       if (!blob.size || !/^audio\//.test(blob.type)) throw new Error('Nguồn giọng đọc không trả về âm thanh hợp lệ.');
       this.ready.set(job.key, blob); this.bytes += blob.size;
-      while (this.ready.size > 8 || this.bytes > 12 * 1024 * 1024) {
+      while (this.ready.size > this.limits.entries || this.bytes > this.limits.bytes) {
         const oldest = this.ready.keys().next().value!;
         this.bytes -= this.ready.get(oldest)!.size; this.ready.delete(oldest);
       }
       job.resolve(blob);
+      this.listeners.forEach(listener => listener());
     } catch (error) { job.reject(error); }
     finally {
       if (this.active === job) {

@@ -7,11 +7,12 @@
     "predev": "node scripts/prepare-tts.mjs",
     "prebuild": "node scripts/prepare-tts.mjs",
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && vite build && node scripts/build-service-worker.mjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "node --test tests/*.test.mjs",
-    "test:browser": "playwright test"
+    "test:browser": "playwright test",
+    "test:tts:live": "node scripts/check-live-tts.mjs"
   },
   "dependencies": {
     "@diffusionstudio/piper-wasm": "1.0.0",
@@ -36,6 +37,7 @@
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
+    "fake-indexeddb": "6.2.5",
     "globals": "^16.5.0",
     "jsdom": "26.1.0",
     "typescript": "~5.9.3",

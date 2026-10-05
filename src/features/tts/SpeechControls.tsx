@@ -6,24 +6,31 @@ function languageName(language: string) {
   try { return new Intl.DisplayNames(['vi'], { type: 'language' }).of(language) || language; }
   catch { return language; }
 }
-export function SpeechControls({ speech, count, autoNext, onAutoNext }: {
-  speech: TtsReader; count: number; autoNext: boolean; onAutoNext: () => void;
+export function SpeechControls({ speech, count, autoNext, onAutoNext, onExpand }: {
+  speech: TtsReader; count: number; autoNext: boolean; onAutoNext: () => void; onExpand?: () => void;
 }) {
   const optionsRef = useRef<HTMLDetailsElement>(null);
   useEffect(() => {
     const measure = () => {
       const details = optionsRef.current;
-      if (details) details.style.setProperty('--speech-options-height', `${Math.max(80, details.getBoundingClientRect().top - 24)}px`);
+      if (details) {
+        const clip = details.closest('.reader-panel, .dialog-body');
+        const top = Math.max(0, clip?.getBoundingClientRect().top || 0);
+        details.style.setProperty('--speech-options-height', `${Math.max(48, details.getBoundingClientRect().top - top - 20)}px`);
+      }
     };
     measure();
     window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
+    const details = optionsRef.current;
+    details?.addEventListener('toggle', measure);
     window.visualViewport?.addEventListener('resize', measure);
     const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(measure) : null;
     const player = optionsRef.current?.closest('.speech-player');
     const shell = optionsRef.current?.closest('.app-shell');
     if (player) observer?.observe(player);
     if (shell) observer?.observe(shell);
-    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); window.visualViewport?.removeEventListener('resize', measure); };
+    return () => { observer?.disconnect(); window.removeEventListener('resize', measure); window.removeEventListener('scroll', measure, true); details?.removeEventListener('toggle', measure); window.visualViewport?.removeEventListener('resize', measure); };
   }, []);
   return <section aria-label="Điều khiển giọng đọc" className="speech-player">
     {!speech.supported && <p role="status" className="field-hint">Trình duyệt này chưa hỗ trợ TTS. Bạn vẫn có thể đọc nội dung hoặc chọn Edge.</p>}
@@ -35,7 +42,7 @@ export function SpeechControls({ speech, count, autoNext, onAutoNext }: {
         <button className="icon-button" aria-label="Đoạn sau" disabled={!count || speech.paragraph >= count - 1} onClick={() => speech.selectParagraph(speech.paragraph + 1)}><ChevronRight size={20}/></button>
         <details ref={optionsRef} className="speech-options"><summary className="icon-button" aria-label="Tùy chọn giọng đọc" title="Giọng và tốc độ"><Settings2 size={18}/></summary>
           <div className="speech-options-panel">
-            <h3>Giọng đọc</h3>
+            <div className="section-row"><h3>Giọng đọc</h3>{onExpand && <button className="text-button" onClick={onExpand}>Mở trình nghe</button>}</div>
             <label className="field-label">Nguồn TTS<select aria-label="Nguồn TTS" value={speech.provider} onChange={event => speech.setProvider(event.target.value as TtsProvider)}><option value="device">Giọng trên thiết bị</option><option value="edge">Microsoft Edge · trực tuyến</option><option value="piper">Piper · neural trên thiết bị</option><option value="espeak">eSpeak NG · trên thiết bị</option><option value="google" disabled={!speech.googleAvailable}>Google · trên thiết bị{!speech.googleAvailable ? ' (chưa có)' : ''}</option></select></label>
             <label className="field-label">Ngôn ngữ<select aria-label="Ngôn ngữ đọc" disabled={speech.catalogLoading || !speech.languages.length} value={speech.language} onChange={event => speech.setLanguage(event.target.value)}>{speech.languages.length ? speech.languages.map(language => <option key={language} value={language}>{languageName(language)}</option>) : <option value={speech.language}>{speech.catalogLoading ? 'Đang tải ngôn ngữ…' : 'Chưa có ngôn ngữ'}</option>}</select></label>
             <label className="field-label">Nam / nữ<select aria-label="Giới tính giọng đọc" value={speech.gender} disabled={speech.catalogLoading} onChange={event => speech.setGender(event.target.value as GenderFilter)}><option value="all">Tất cả</option><option value="male" disabled={!speech.genders.includes('male')}>Nam</option><option value="female" disabled={!speech.genders.includes('female')}>Nữ</option>{speech.genders.includes('unknown') && <option value="unknown">Chưa có thông tin</option>}</select></label>
