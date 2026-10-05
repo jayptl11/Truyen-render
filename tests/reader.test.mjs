@@ -29,11 +29,11 @@ function mount({ saved = {}, unsupported = false, fetcher, fakeClock = false } =
   w.fetch = async (url, options = {}) => {
     requests.push({ url, options });
     if (fetcher) return fetcher(url, options);
-    const query = new URL(url).searchParams;
+    const query = new URL(url, 'http://localhost:5173').searchParams;
     const source = query.get('url') || query.get('quest');
     if (!source) throw Error(`Unexpected external call: ${url}`);
     const content = source === chapter1 ? html(1, '/truyen/chuong-2') : html(2);
-    return new Response(JSON.stringify({ contents: content }), { status: 200 });
+    return new Response(JSON.stringify({ html: content, sourceUrl: source }), { status: 200 });
   };
   const synthesis = new w.EventTarget();
   synthesis.calls = []; synthesis.current = null; synthesis.pauses = 0; synthesis.resumes = 0; synthesis.cancels = 0;
@@ -85,6 +85,62 @@ test('extracts original story, preserves paragraphs and resolves chapter links',
   dom.window.close();
 });
 
+test('supports chapter-content and entry-content containers, removes adverts and resolves navigation', () => {
+  const dom = new JSDOM('', { runScripts: 'outside-only' });
+  dom.window.eval(sourceBundle);
+  for (const container of ['chapter-content', 'entry-content']) {
+    const markup = `<h1 class="entry-title">Chương 1: Mở đầu</h1><div class="${container}"><p>Đoạn đầu tiên.</p><br>Đoạn tiếp theo.<div class="advertisement">Quảng cáo</div><nav>Menu</nav><a id="next_chap" href="../chuong-2/">Chương sau</a></div><a rel="prev bookmark" href="../gioi-thieu/">Quay lại</a>`;
+    const data = dom.window.StorySource.parseStoryHtml(markup, 'https://webnovel.vn/tien-nghich/chuong-1/');
+    assert.match(data.content, /Chương 1: Mở đầu\n\nĐoạn đầu tiên\./);
+    assert.match(data.content, /Đoạn tiếp theo/);
+    assert.ok(!/Quảng cáo|Menu|Chương sau/.test(data.content));
+    assert.equal(data.nextUrl, 'https://webnovel.vn/tien-nghich/chuong-2/');
+    assert.equal(data.prevUrl, 'https://webnovel.vn/tien-nghich/gioi-thieu/');
+  }
+  assert.throws(() => dom.window.StorySource.parseStoryHtml('<title>Just a moment...</title><form id="challenge-form">Check</form>', chapter1), /yêu cầu xác minh/);
+  dom.window.close();
+});
+
+test('server fetch resolves relative navigation against the final redirected URL', async () => {
+  const app = mount({ fetcher: async url => {
+    assert.ok(url.startsWith('/api/story?'));
+    return new Response(JSON.stringify({ html: html(1, 'chuong-2/'), sourceUrl: 'https://example.com/new-location/' }));
+  } });
+  try {
+    await loadFirst(app);
+    assert.equal(app.requests.length, 1);
+    assert.equal(cache(app)[0].nextUrl, 'https://example.com/new-location/chuong-2/');
+  } finally { app.close(); }
+});
+
+test('falls back to external proxies when server is unavailable or a proxy returns invalid HTML', async () => {
+  const app = mount({ fetcher: async url => {
+    if (url.startsWith('/api/story?')) return new Response('<html>Static hosting</html>', { status: 404 });
+    if (url.includes('allorigins')) return new Response(JSON.stringify({ contents: '<html>No chapter here</html>' }));
+    return new Response(html(1));
+  } });
+  try {
+    await loadFirst(app);
+    assert.equal(app.requests.length, 3);
+    assert.equal(cache(app).length, 1);
+  } finally { app.close(); }
+});
+
+test('cancelling a server request does not launch proxy fallback requests', async () => {
+  const dom = new JSDOM('', { runScripts: 'outside-only' });
+  const w = dom.window;
+  w.AbortSignal = globalThis.AbortSignal; w.AbortController = globalThis.AbortController;
+  let requests = 0;
+  w.fetch = (_url, { signal }) => new Promise((_resolve, reject) => { requests++; signal.addEventListener('abort', () => reject(signal.reason)); });
+  w.eval(sourceBundle);
+  const controller = new AbortController();
+  const task = w.StorySource.fetchRawStoryData(chapter1, controller.signal);
+  controller.abort();
+  await assert.rejects(task);
+  assert.equal(requests, 1);
+  w.close();
+});
+
 test('loads, reads and speaks raw chapters without API keys; next chapter has its own cache identity', async () => {
   const app = mount();
   try {
@@ -103,7 +159,7 @@ test('loads, reads and speaks raw chapters without API keys; next chapter has it
     assert.match(stored.find(c => c.url === chapter1).content, /chương 1/);
     assert.match(stored.find(c => c.url === chapter2).content, /chương 2/);
     assert.ok(stored.every(c => c.translatedContent === ''));
-    assert.ok(app.requests.every(r => r.url.includes('api.allorigins.win')));
+    assert.ok(app.requests.every(r => r.url.startsWith('/api/story?')));
     assert.equal(app.synthesis.current, null);
     assert.deepEqual(app.errors, []);
   } finally { app.close(); }
@@ -177,7 +233,7 @@ test('sleep timer stops speech even when automatic chapter navigation is off', a
 test('raw reading works without speech support and failed fetch preserves the current chapter', async () => {
   let first = true;
   const app = mount({ unsupported: true, fetcher: async () => {
-    if (first) { first = false; return new Response(JSON.stringify({ contents: html(1, chapter2) })); }
+    if (first) { first = false; return new Response(JSON.stringify({ html: html(1, chapter2) })); }
     return new Response('Service down', { status: 503 });
   } });
   try {
@@ -206,7 +262,7 @@ test('speech splits long paragraphs and cache updates preserve a matching existi
 test('translation is optional and switching back speaks the original content', async () => {
   const app = mount({ saved: { groq_api_keys: ['test-only-key', '', ''] }, fetcher: async url => {
     if (url.includes('api.groq.com')) return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: 'Chương 1: Bản dịch\nĐây là đoạn đã dịch.' } }] }));
-    return new Response(JSON.stringify({ contents: html(1) }));
+    return new Response(JSON.stringify({ html: html(1) }));
   } });
   try {
     await loadFirst(app);
@@ -237,9 +293,9 @@ test('chapter limit stops at the end of the current chapter without loading anot
 test('late fetch responses cannot overwrite a newer chapter', async () => {
   let resolveOld;
   const app = mount({ fetcher: async (url, options) => {
-    const target = new URL(url).searchParams.get('url');
-    if (target === chapter1) return new Promise(resolve => { resolveOld = resolve; options.signal.addEventListener('abort', () => resolve(new Response(JSON.stringify({ contents: html(1) })))); });
-    return new Response(JSON.stringify({ contents: html(2) }));
+    const target = new URL(url, 'http://localhost:5173').searchParams.get('url');
+    if (target === chapter1) return new Promise(resolve => { resolveOld = resolve; options.signal.addEventListener('abort', () => resolve(new Response(JSON.stringify({ html: html(1) })))); });
+    return new Response(JSON.stringify({ html: html(2) }));
   } });
   try {
     await until(() => app.w.document.querySelector('input[placeholder*="Dán link"]'));
@@ -249,7 +305,7 @@ test('late fetch responses cannot overwrite a newer chapter', async () => {
     app.input(app.w.document.querySelector('input[placeholder*="Dán link"]'), chapter2); await wait(20);
     app.w.document.querySelector('button[aria-label="Lấy nội dung truyện"]').click();
     await until(() => cache(app).length);
-    resolveOld(new Response(JSON.stringify({ contents: html(1) }))); await wait(30);
+    resolveOld(new Response(JSON.stringify({ html: html(1) }))); await wait(30);
     assert.equal(cache(app).length, 1); assert.equal(cache(app)[0].url, chapter2);
     assert.match(app.w.document.body.textContent, /Nội dung chương 2/);
   } finally { app.close(); }
@@ -265,7 +321,7 @@ test('batch translates raw cached chapters, keeps progress on failure and resume
       return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: text.includes('chương 1') ? 'Chương 1 dịch\nMột.' : 'Chương 2 dịch\nHai.' } }] }));
     }
     if (failSecond) return new Response('Down', { status: 503 });
-    return new Response(JSON.stringify({ contents: html(2) }));
+    return new Response(JSON.stringify({ html: html(2) }));
   } });
   try {
     await until(() => app.button('Cài đặt'));
@@ -305,10 +361,10 @@ test('bookmark restores its saved paragraph even when reopening the current chap
 test('disabling continuous listening during chapter fetch prevents a late automatic restart', async () => {
   let resolveNext;
   const app = mount({ fetcher: async (url, options) => {
-    const source = new URL(url).searchParams.get('url');
-    if (source === chapter1) return new Response(JSON.stringify({ contents: html(1, chapter2) }));
+    const source = new URL(url, 'http://localhost:5173').searchParams.get('url');
+    if (source === chapter1) return new Response(JSON.stringify({ html: html(1, chapter2) }));
     return new Promise((resolve, reject) => {
-      resolveNext = () => resolve(new Response(JSON.stringify({ contents: html(2) })));
+      resolveNext = () => resolve(new Response(JSON.stringify({ html: html(2) })));
       options.signal.addEventListener('abort', () => reject(new DOMException('Canceled', 'AbortError')));
     });
   } });

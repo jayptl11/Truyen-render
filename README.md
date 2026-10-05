@@ -50,17 +50,26 @@ Nếu môi trường có Chromium sẵn, có thể dùng `PLAYWRIGHT_CHROMIUM_EX
 - `src/features/settings`: cấu hình AI và đọc/nghe.
 - `src/features/diagnostics`: nhật ký lỗi với thông tin khóa được che.
 - `src/services/storySources`: tải qua proxy và phân tích HTML truyện.
+- `api/story.ts`: API lấy HTML trên Vercel; gọi trực tiếp website nguồn.
+- `server/story.ts`: tải có giới hạn thời gian/dung lượng, kiểm tra URL/DNS và chuyển hướng.
 - `src/services/ai`: cấu hình nhà cung cấp và gọi API, dùng chung cho dịch/phân tích.
 - `src/services/storage`: truy cập bộ nhớ, định danh chương, tiến độ và xuất nội dung.
 - `src/types`: kiểu dữ liệu chung.
 - `tests/reader.test.mjs`: kiểm tra hồi quy các luồng chính bằng DOM và SpeechSynthesis mô phỏng.
 - `tests/browser/responsive.spec.mjs`: kiểm tra bố cục và thao tác bằng Chromium thật.
+- `tests/server.test.mjs`: kiểm tra API, địa chỉ nội bộ, chuyển hướng và giới hạn trang.
+
+## Triển khai Vercel
+
+Chọn framework **Vite**, build command `npm run build`, output directory `dist`, Node.js 22 hoặc 24. Đặt Root Directory ở thư mục chứa `package.json` và `api/`. Vercel tự triển khai `api/story.ts` thành Node function; `vercel.json` đặt thời gian tối đa 30 giây. Không cần API key cho việc lấy truyện. Sau khi cập nhật code phải có deployment mới để API xuất hiện; chỉ tải thư mục `dist` lên hosting tĩnh sẽ không có server này.
+
+Khi chạy `npm run dev`, Vite phục vụ cùng API để kiểm tra local. `npm run preview` chỉ phục vụ frontend tĩnh; kiểm tra API dùng dev server hoặc deployment Vercel.
 
 ## Phạm vi hỗ trợ
 
 TTS dùng Web Speech API và giọng cài trên thiết bị, không cần dịch vụ TTS hay API key. Có phát/tạm dừng, dừng, chuyển đoạn, tô sáng đoạn, nhớ vị trí, hẹn giờ và nghe tiếp chương sau. Khả năng có giọng tiếng Việt và phát khi khóa màn hình phụ thuộc hệ điều hành/trình duyệt; kiểm tra trên thiết bị thật trước khi dùng cho nghe nền.
 
-Lấy truyện hiện dùng `api.allorigins.win` và `api.codetabs.com`, với các selector nội dung phổ biến. Website thay cấu trúc, yêu cầu đăng nhập, chống bot hoặc dựng nội dung bằng JavaScript có thể không lấy được; khi đó có thể dán văn bản trực tiếp. Chưa có backend thu thập nội dung riêng.
+Lấy truyện ưu tiên `/api/story` trên server Vercel, sau đó thử `api.allorigins.win` và `api.codetabs.com` nếu tải hoặc phân tích thất bại. Server chỉ truy cập HTTP/HTTPS công khai, kiểm tra và ghim IP kết nối, kiểm tra lại từng chuyển hướng, giới hạn 20 giây/2 MB và không gửi cookie đăng nhập. Hỗ trợ các selector nội dung phổ biến, bao gồm `.chapter-content`, `.entry-content` và `.reading-content`. Website thay cấu trúc, yêu cầu đăng nhập, chống bot hoặc dựng nội dung bằng JavaScript vẫn có thể không lấy được; khi đó có thể dán văn bản trực tiếp. API này tải HTML, không chạy trình duyệt hoặc vượt qua xác minh của website nguồn.
 
 API key được nhập trong giao diện và lưu trên thiết bị. AI là chức năng tùy chọn và có thể tính phí theo nhà cung cấp. Test dùng phản hồi AI và giọng đọc mô phỏng, không gọi dịch vụ trả phí hay xác minh âm thanh thực tế.
 
