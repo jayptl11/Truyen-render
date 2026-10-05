@@ -56,7 +56,25 @@ async function requestPage(url: URL, signal: AbortSignal): Promise<{ status: num
   if (!addresses.length || addresses.some(entry => !isPublicAddress(entry.address))) {
     throw new StoryFetchError('Nguồn truyện không trỏ đến địa chỉ mạng công khai.', 400, 'INVALID_URL');
   }
-  const address = addresses[0];
+  // A public IPv6 record may be unreachable from the hosting region. Try each
+  // checked address under the same overall deadline; never perform a second DNS lookup.
+  const candidates = [...addresses].sort((a, b) => a.family - b.family).slice(0, 4);
+  let failure: unknown;
+  for (const address of candidates) {
+    signal.throwIfAborted();
+    try { return await requestAddress(url, address, candidates.length > 1 ? AbortSignal.any([signal, AbortSignal.timeout(6500)]) : signal); }
+    catch (error) {
+      if (signal.aborted || error instanceof StoryFetchError) throw error;
+      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
+      if (!['ABORT_ERR', 'ECONNRESET', 'ECONNREFUSED', 'ETIMEDOUT', 'ENETUNREACH', 'EHOSTUNREACH', 'EPIPE', 'ERR_STREAM_PREMATURE_CLOSE'].includes(code)) throw error;
+      failure = error;
+    }
+  }
+  if (failure && typeof failure === 'object' && 'code' in failure && failure.code === 'ABORT_ERR') throw new StoryFetchError('Website nguồn phản hồi quá chậm sau khi thử các địa chỉ kết nối. Thử lại sau.', 504, 'SOURCE_TIMEOUT');
+  throw failure;
+}
+
+function requestAddress(url: URL, address: LookupAddress, signal: AbortSignal): Promise<{ status: number; location?: string; html: string }> {
   return new Promise((resolve, reject) => {
     const request = (url.protocol === 'https:' ? httpsRequest : httpRequest)(url, {
       signal,
@@ -102,7 +120,9 @@ async function requestPage(url: URL, signal: AbortSignal): Promise<{ status: num
           if (encoding === 'gzip') body = gunzipSync(body, options);
           else if (encoding === 'br') body = brotliDecompressSync(body, options);
           else if (encoding === 'deflate') body = inflateSync(body, options);
-          const charset = type.match(/charset\s*=\s*["']?([^;\s"']+)/i)?.[1] || 'utf-8';
+          const prefix = body.subarray(0, 4096).toString('ascii');
+          const metaCharset = prefix.match(/<meta\b[^>]*charset\s*=\s*["']?([a-z\d_-]+)/i)?.[1];
+          const charset = type.match(/charset\s*=\s*["']?([^;\s"']+)/i)?.[1] || metaCharset || 'utf-8';
           resolve({ status, html: new TextDecoder(charset).decode(body) });
         } catch { reject(new StoryFetchError('Không giải mã được nội dung trang nguồn.', 422, 'INVALID_CONTENT')); }
       });

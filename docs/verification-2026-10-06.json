@@ -1,0 +1,66 @@
+{
+  "date": "2026-10-06",
+  "timezone": "Asia/Ho_Chi_Minh",
+  "scope": "Multi-site content extraction and catalog compatibility in the local cloud instance.",
+  "checks": {
+    "build": "passed",
+    "lint": "passed",
+    "node": {
+      "passed": 67
+    },
+    "chromium_dev_targeted": {
+      "passed": 13,
+      "areas": [
+        "chapter transport and navigation",
+        "library/catalog/offline audio",
+        "Edge playback regressions"
+      ]
+    },
+    "chromium_production_targeted": {
+      "passed": 8,
+      "areas": [
+        "multi-site chapter navigation",
+        "book library and cache reload",
+        "offline production shell"
+      ]
+    }
+  },
+  "extractionEvidence": {
+    "liveHtmlFixture": "Existing Webnovel book HTML fixture",
+    "syntheticLayouts": [
+      "MTruyen-style chapter_content/content-chapter/truyen-content and generic content containers",
+      "Truyen Full chapter-c",
+      "Truyen YY inner_chap_content_1",
+      "Tang Thu Vien box-chap",
+      "unregistered article/itemprop layouts",
+      "public Next.js chapter JSON and JSON-LD"
+    ],
+    "syntheticCatalogs": [
+      "MTruyen-style list and unnamed chapter links",
+      "select options",
+      "query-based chapter URLs"
+    ],
+    "importantCases": [
+      "Ignore first empty/menu match, ads, hidden text and dense links",
+      "Skip self, disabled, cross-book and foreign chapter navigation",
+      "Keep query-based book identity and original catalog URL",
+      "Do not read book summaries or other chapters from embedded JSON",
+      "Stop on invalid destinations and access challenges without fallback proxy requests",
+      "Keep legacy library association and book ID when merging catalogs"
+    ]
+  },
+  "serverEvidence": [
+    "All DNS records must be public; connections use pinned checked IPs",
+    "IPv4 preference and failover tested against an actual local HTTP fixture with simulated DNS/first-connection failure",
+    "Redirect, compressed size, method and URL checks retained",
+    "Charset meta fallback tested using Windows-1252 bytes"
+  ],
+  "unverified": {
+    "requestedMTruyenUrl": "https://mtruyen.net/truyen/tien-nghich/chuong-1",
+    "reason": "Cloud HTTPS proxy rejected CONNECT with 403 before contacting the source; this is not an origin HTTP 403 or a confirmed cause of the deployed reader failure.",
+    "vercelDeployment": true,
+    "liveOtherProfileSites": true,
+    "headlessSourceRendering": "Not implemented. Only HTML/public embedded JSON is read; authenticated chapters and separate dynamic content APIs need dedicated integration."
+  },
+  "cloudConfig": "Added mtruyen.net to the existing draft allowlist; saving the draft does not apply/publish network settings."
+}

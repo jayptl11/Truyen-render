@@ -31,5 +31,7 @@ export interface ReadingProgress {
 export interface ChapterReference { url: string; title: string; index: number }
 export interface Book {
   id: string; title: string; source: string; author: string; cover: string; description: string;
+  /** Original first catalog URL; its slash/query spelling can matter to the source. */
+  catalogUrl?: string;
   chapters: ChapterReference[]; catalogNext: string | null; updated: number;
 }

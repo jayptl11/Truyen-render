@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { BookOpen, ChevronLeft, Download, Headphones, Link, RefreshCw, Trash2 } from 'lucide-react';
 import { Dialog } from '../../components/Dialog';
 import type { Book, Chapter } from '../../types/story';
-import { fetchBook, mergeCatalog, searchSource, SOURCES, type SourceSearchResult } from '../../services/storySources/books';
+import { bookIdentity, fetchBook, mergeCatalog, searchSource, SOURCES, type SourceSearchResult } from '../../services/storySources/books';
 import { fetchRawStoryData } from '../../services/storySources/client';
 import { createChapter } from '../../services/storage/chapters';
 import { audioStorageInfo, clearAudioCache } from '../../services/storage/audioCache';
@@ -42,11 +42,11 @@ export function LibraryDialog(props: Props) {
     catch (failure) { if (!request.signal.aborted) setError(errorMessage(failure)); }
     finally { if (controller.current === request) { setTask(''); void audioStorageInfo().then(setAudioInfo).catch(() => {}); } }
   };
-  const importBook = (url = link) => { void run(async signal => { setTask('Đang lấy thông tin và mục lục…'); const incoming = await fetchBook(url, signal); signal.throwIfAborted(); const existing = current.current.books.find(item => item.id === incoming.id); props.onBook(existing ? mergeCatalog(existing, incoming) : incoming); setBookId(incoming.id); setCatalogPage(0); setQuery(''); setTab('books'); }); };
+  const importBook = (url = link) => { void run(async signal => { setTask('Đang lấy thông tin và mục lục…'); const incoming = await fetchBook(url, signal); signal.throwIfAborted(); const existing = current.current.books.find(item => bookIdentity(item.id) === bookIdentity(incoming.id)); const saved = existing ? mergeCatalog(existing, incoming) : incoming; props.onBook(saved); setBookId(saved.id); setCatalogPage(0); setQuery(''); setTab('books'); }); };
   const updateCatalog = (all: boolean, refresh = false) => {
     if (!book) return;
     void run(async signal => {
-      let merged = book; let url: string | null = refresh ? book.id : book.catalogNext;
+      let merged = book; let url: string | null = refresh ? book.catalogUrl || book.id : book.catalogNext;
       const visited = new Set<string>();
       while (url) {
         if (visited.has(url)) throw new Error('Nguồn lặp lại trang mục lục. Mục lục đã tải vẫn được giữ.');
@@ -83,10 +83,10 @@ export function LibraryDialog(props: Props) {
       <h3>Tìm trên Webnovel.vn</h3><form className="book-import" onSubmit={event => { event.preventDefault(); void run(async signal => { setTask('Đang tìm truyện…'); const found = await searchSource(sourceQuery, signal); signal.throwIfAborted(); setResults(found); setSearched(true); }); }}><input aria-label="Tên truyện trên nguồn" required value={sourceQuery} onChange={event => setSourceQuery(event.target.value)} placeholder="Tên truyện hoặc tác giả"/><button className="button-secondary" disabled={!!task}>Tìm truyện trên nguồn</button></form>
       {searched && !results.length && <p className="field-hint">Không tìm thấy truyện. Thử tên khác hoặc dán liên kết bên dưới.</p>}
       <ul className="source-search-results">{results.map(result => <li key={result.url}><button disabled={!!task} onClick={() => importBook(result.url)}><strong>{result.title}</strong><span>Thêm vào thư viện →</span></button></li>)}</ul>
-      <h3>Thêm bằng liên kết</h3><p className="field-hint">Dán liên kết trang truyện để lấy tên, bìa và mục lục. Nếu chỉ có liên kết chương, dùng Thêm truyện ở thanh điều hướng.</p>
+      <h3>Thêm bằng liên kết từ nhiều website</h3><p className="field-hint">Dán liên kết trang truyện để lấy tên, bìa và mục lục trong HTML. Nếu chỉ có liên kết chương, dùng Thêm truyện ở thanh điều hướng.</p>
       <form onSubmit={event => { event.preventDefault(); importBook(); }} className="book-import"><input aria-label="Liên kết trang truyện" type="url" required placeholder="https://webnovel.vn/tien-nghich/" value={link} onChange={event => setLink(event.target.value)}/><button className="button-primary" disabled={!!task}><Link size={16}/>Thêm truyện vào thư viện</button></form>
       {SOURCES.map(source => <article className="source-card" key={source.id}><strong>{source.name}</strong><p className="field-hint">{source.description}</p><a href={source.origin} target="_blank" rel="noreferrer">Mở nguồn để tìm truyện ↗</a></article>)}
-      <p className="field-hint">Các nguồn khác dùng bộ lấy chương chung. Mục lục hỗ trợ trang có danh sách chương trong HTML.</p>
+      <p className="field-hint">Website khác vẫn dùng bộ nhận diện nội dung chung, không giới hạn ở danh sách này. Trang cần đăng nhập, xác minh hoặc tải truyện bằng JavaScript có thể cần tích hợp riêng.</p>
     </section> : tab === 'books' ? book ? <section className="book-detail">
       <button className="text-button" onClick={() => setBookId('')}><ChevronLeft size={16}/>Tất cả truyện</button>
       <div className="book-heading"><BookCover book={book}/><div><span className="eyebrow">{book.source}</span><h3>{book.title}</h3><p>{book.author}</p><p className="field-hint">{book.chapters.length} chương trong mục lục · {book.chapters.filter(item => stored.has(item.url)).length} đã tải{book.catalogNext ? ' · còn trang tiếp' : ''}</p></div></div>

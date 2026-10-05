@@ -5,6 +5,7 @@ import { createServer, request } from 'node:http';
 import { createRequire } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { gzipSync } from 'node:zlib';
+import { EventEmitter } from 'node:events';
 
 const require = createRequire(import.meta.url);
 const bundle = buildSync({ entryPoints: ['api/story.ts'], bundle: true, platform: 'node', format: 'cjs', write: false }).outputFiles[0].text;
@@ -56,6 +57,7 @@ test('API returns HTML and final URL, bounds pages, and rechecks redirect destin
     else if (req.url === '/large') { res.setHeader('Content-Type', 'text/html'); res.end('x'.repeat(2 * 1024 * 1024 + 1)); }
     else if (req.url === '/compressed') { res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.setHeader('Content-Encoding', 'gzip'); res.end(gzipSync(text)); }
     else if (req.url === '/compressed-large') { res.setHeader('Content-Type', 'text/html'); res.setHeader('Content-Encoding', 'gzip'); res.end(gzipSync('x'.repeat(3 * 1024 * 1024))); }
+    else if (req.url === '/charset') { res.setHeader('Content-Type', 'text/html'); res.end(Buffer.from('<meta charset="windows-1252"><div class="chapter-content">caf\xe9</div>', 'latin1')); }
     else { res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end(text); }
   });
   await new Promise(resolve => origin.listen(0, '127.0.0.1', resolve));
@@ -81,10 +83,30 @@ test('API returns HTML and final URL, bounds pages, and rechecks redirect destin
   assert.match(success.headers.get('cache-control'), /s-maxage=300/);
   assert.ok(pinned.every(ip => ip === '8.8.8.8'));
   assert.equal((await (await call('/compressed')).json()).html, text);
+  assert.match((await (await call('/charset')).json()).html, /café/);
   assert.equal((await call('/private')).status, 400);
   assert.equal((await (await call('/blocked')).json()).code, 'SOURCE_BLOCKED');
   assert.equal((await call('/large')).status, 413);
   assert.equal((await call('/compressed-large')).status, 422);
   assert.equal((await call(null)).status, 400);
   assert.equal((await call('/chapter', { method: 'POST' })).status, 405);
+});
+
+test('server prefers IPv4 and retries another checked public address after a connection failure', async t => {
+  const origin = createServer((_req, res) => { res.setHeader('Content-Type', 'text/html'); res.end('<div class="chapter-content">Truyện</div>'); });
+  await new Promise(resolve => origin.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => origin.close(resolve)));
+  const pinned = [];
+  const service = getService({
+    'node:dns/promises': { lookup: async () => [{ address: '2606:4700:4700::1111', family: 6 }, { address: '8.8.8.8', family: 4 }, { address: '1.1.1.1', family: 4 }] },
+    'node:https': { request: (url, options, callback) => {
+      let checked; options.lookup(url.hostname, {}, (_error, ip) => { checked = ip; pinned.push(ip); });
+      if (checked === '8.8.8.8') {
+        const failed = new EventEmitter(); failed.end = () => queueMicrotask(() => failed.emit('error', Object.assign(new Error('Connection reset'), { code: 'ECONNRESET' }))); return failed;
+      }
+      return request(`http://127.0.0.1:${origin.address().port}/`, { ...options, lookup: undefined }, callback);
+    } },
+  });
+  const result = await service.fetchStoryPage('https://multi.example/chapter');
+  assert.match(result.html, /Truyện/); assert.deepEqual(pinned, ['8.8.8.8', '1.1.1.1']);
 });

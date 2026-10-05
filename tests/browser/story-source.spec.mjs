@@ -27,3 +27,23 @@ test('URL reader uses the app API and follows extracted chapter navigation', asy
   await expect(article).toContainText('Nội dung bản gốc chương 2.');
   expect(calls).toEqual(['https://webnovel.vn/tien-nghich/chuong-1/', 'https://webnovel.vn/tien-nghich/chuong-2/']);
 });
+
+test('another website can supply a chapter through a different layout and continue without translation', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const calls = [];
+  await page.route('**/api/story?*', route => {
+    const sourceUrl = new URL(route.request().url()).searchParams.get('url'); calls.push(sourceUrl);
+    const number = sourceUrl.endsWith('chuong-2') ? 2 : 1;
+    return route.fulfill({ json: { sourceUrl, html: `<header><h1>MTruyen</h1></header><h2 class="chapter_title">Chương ${number}: Thử đa nguồn</h2><div id="chapter-content"></div><section id="content-chapter"><p>Văn bản chương ${number}, lấy để nghe bản gốc.</p><p>Đoạn kế tiếp.</p><div style="display:none">Nội dung ẩn</div><div class="ads-responsive">Quảng cáo</div></section>${number === 1 ? '<a id="next_chapter" href="chuong-2">Tiếp</a>' : ''}` } });
+  });
+  await page.goto('/');
+  await page.getByLabel('Liên kết chương truyện', { exact: true }).fill('https://mtruyen.net/truyen/tien-nghich/chuong-1');
+  await page.getByRole('button', { name: 'Lấy nội dung truyện', exact: true }).click();
+  const article = page.getByRole('article', { name: 'Nội dung bản gốc' });
+  await expect(article).toContainText('Chương 1: Thử đa nguồn');
+  await expect(article).toContainText('Văn bản chương 1, lấy để nghe bản gốc.');
+  await expect(article).not.toContainText('Quảng cáo'); await expect(article).not.toContainText('Nội dung ẩn');
+  await page.getByRole('button', { name: 'Chương sau', exact: true }).click();
+  await expect(article).toContainText('Văn bản chương 2');
+  expect(calls).toEqual(['https://mtruyen.net/truyen/tien-nghich/chuong-1', 'https://mtruyen.net/truyen/tien-nghich/chuong-2']);
+});

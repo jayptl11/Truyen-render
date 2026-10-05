@@ -22,7 +22,7 @@ export function SourcePanel(props: Props) {
       <label htmlFor="story-url" className="field-label">Liên kết chương truyện</label>
       <input id="story-url" type="url" inputMode="url" autoCapitalize="none" autoCorrect="off" autoComplete="url" spellCheck={false} value={props.url} onChange={event => props.onUrl(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !props.loading) props.onFetch(); }} placeholder="Dán link chương truyện…" aria-describedby="source-hint"/>
       <button aria-label="Lấy nội dung truyện" className="button-primary source-submit" disabled={props.loading || props.translating} onClick={props.onFetch}>{props.loading ? <RotateCw size={18} className="loading-icon"/> : <ArrowRight size={18}/>}<span>{props.loading ? 'Đang lấy nội dung' : 'Lấy nội dung'}</span></button>
-      <p id="source-hint" className="field-hint">Đọc và nghe bản gốc không cần API key.</p>
+      <p id="source-hint" className="field-hint">Lấy chương từ nhiều website có nội dung HTML. Đọc và nghe bản gốc không cần API key.</p>
       {!!props.content && <details className="original-preview"><summary>Nội dung đã lấy <span>{props.content.length.toLocaleString('vi-VN')} ký tự</span></summary><textarea aria-label="Nội dung gốc" value={props.content} readOnly rows={6}/></details>}
     </div> : <div className="source-form">
       <label htmlFor="manual-text" className="field-label">Nội dung truyện</label>
