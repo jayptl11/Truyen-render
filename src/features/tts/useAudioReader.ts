@@ -16,6 +16,7 @@ export function useAudioReader(options: SpeechOptions, voice: TtsVoice | undefin
   const state = useRef({ status: 'idle' as SpeechStatus, paragraph: options.initialParagraph, part: 0 });
   const settings = useRef({ options, voice, rate, provider });
   const generation = useRef(0);
+  const partGeneration = useRef(0);
   const [buffer] = useState(() => new SpeechAudioBuffer(synthesizeAudio));
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const audioUrl = useRef('');
@@ -31,7 +32,7 @@ export function useAudioReader(options: SpeechOptions, voice: TtsVoice | undefin
   const stop = useCallback(() => {
     generation.current++; buffer.clear();
     releaseLocalTts();
-    clearAudio(); state.current.part = 0; changeStatus('idle'); setLoading(false);
+    clearAudio(); state.current.part = 0; changeStatus('idle'); setLoading(false); setError('');
   }, [buffer, clearAudio, changeStatus]);
   useEffect(() => () => { generation.current++; buffer.clear(); releaseLocalTts(); clearAudio(); }, [buffer, clearAudio]);
   useEffect(() => {
@@ -46,6 +47,11 @@ export function useAudioReader(options: SpeechOptions, voice: TtsVoice | undefin
     generation.current++; buffer.cancelPending();
     audioRef.current?.pause(); changeStatus('paused'); setLoading(false);
   }, [buffer, changeStatus]);
+  const holdFailure = useCallback((message: string) => {
+    generation.current++; buffer.cancelPending(); clearAudio();
+    changeStatus('paused'); setLoading(false);
+    setError(`${message} Bấm Tiếp tục nghe để thử lại phần đang chờ.`);
+  }, [buffer, clearAudio, changeStatus]);
   const start = useCallback((at?: number, resume = false) => {
     const { options: current, voice: selected, provider: source } = settings.current;
     if (!selected) { setError('Chọn một giọng trước khi nghe.'); return; }
@@ -74,6 +80,8 @@ export function useAudioReader(options: SpeechOptions, voice: TtsVoice | undefin
       if (line >= current.paragraphs.length) { clearAudio(); changeStatus('idle'); settings.current.options.onComplete(); return; }
       const parts = splitSpeechText(current.paragraphs[line], limit);
       if (part >= parts.length) { await speak(line + 1, 0); return; }
+      const piece = ++partGeneration.current;
+      const isPartCurrent = () => isCurrent() && piece === partGeneration.current;
       state.current.paragraph = line; state.current.part = part;
       setParagraph(line); settings.current.options.onParagraph(line);
       const segment = { provider: source, voice: selected, text: parts[part] };
@@ -82,36 +90,36 @@ export function useAudioReader(options: SpeechOptions, voice: TtsVoice | undefin
         if (audioKey.current !== key || !audioUrl.current) {
           clearAudio(); setLoading(true);
           setLoadingMessage('Đang chuẩn bị giọng đọc…');
-          const blob = await buffer.get(segment, message => { if (isCurrent()) setLoadingMessage(message); });
-          if (!isCurrent()) return;
+          const blob = await buffer.get(segment, message => { if (isPartCurrent()) setLoadingMessage(message); });
+          if (!isPartCurrent()) return;
           const url = URL.createObjectURL(blob);
           audioUrl.current = url; audioKey.current = key;
           if (!audioRef.current) audioRef.current = new Audio();
           audioRef.current.src = url;
         }
-        if (!isCurrent()) return;
+        if (!isPartCurrent()) return;
         const audio = audioRef.current!;
         setLoading(false); audio.playbackRate = settings.current.rate;
         let ended = false;
         audio.onended = () => {
-          if (!isCurrent() || ended) return;
+          if (!isPartCurrent() || ended) return;
           ended = true;
           clearAudio(); void speak(line, part + 1);
         };
         audio.onerror = () => {
-          if (!isCurrent()) return;
-          stop(); setError('Không phát được âm thanh. Thử lại hoặc chọn nguồn giọng khác.');
+          if (!isPartCurrent() || !audio.error) return;
+          holdFailure('Không phát được âm thanh.');
         };
         await audio.play();
-        if (isCurrent()) buffer.prefetch(ahead(line, part + 1));
+        if (isPartCurrent()) buffer.prefetch(ahead(line, part + 1));
       } catch (failure) {
-        if (!isCurrent()) return;
+        if (!isPartCurrent()) return;
         const message = speechError(failure);
-        stop(); setError(message);
+        holdFailure(message);
       }
     };
     void speak(index, firstPart);
-  }, [buffer, stop, clearAudio, changeStatus]);
+  }, [buffer, holdFailure, clearAudio, changeStatus]);
   const play = useCallback((at?: number) => start(at), [start]);
   const toggle = useCallback(() => {
     if (state.current.status === 'playing') pause();

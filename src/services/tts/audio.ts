@@ -1,4 +1,5 @@
 import type { AudioProvider, TtsVoice } from '../../types/tts';
+import { SpeechRequestError } from './errors';
 
 let worker: Worker | null = null;
 let sequence = 0;
@@ -30,7 +31,7 @@ export async function synthesizeAudio(provider: AudioProvider, text: string, voi
     body: JSON.stringify({ voice: voice.id, language: voice.language, text }), signal });
   if (!response.ok) {
     const failure = await response.json().catch(() => null);
-    throw new Error(failure?.error || `Không tạo được giọng Edge (HTTP ${response.status}).`);
+    throw new SpeechRequestError(failure?.error || `Không tạo được giọng Edge (HTTP ${response.status}).`, response.status);
   }
   return response.blob();
 }

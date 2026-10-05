@@ -1,3 +1,14 @@
+export class SpeechRequestError extends Error {
+  status: number;
+  constructor(message: string, status: number) { super(message); this.name = 'SpeechRequestError'; this.status = status; }
+}
+export function retryableSpeechError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false;
+  const name = 'name' in error ? error.name : '';
+  if (['AbortError', 'TimeoutError', 'TypeError'].includes(String(name))) return true;
+  return error instanceof SpeechRequestError && [408, 429, 500, 502, 503, 504].includes(error.status);
+}
+
 export function speechError(error: unknown, signal?: AbortSignal): string {
   const name = error && typeof error === 'object' && 'name' in error ? error.name : '';
   if (signal?.aborted || name === 'AbortError' || name === 'TimeoutError') {

@@ -1,4 +1,5 @@
 import type { AudioProvider, TtsVoice } from '../../types/tts';
+import { retryableSpeechError } from './errors';
 
 export interface SpeechSegment { provider: AudioProvider; voice: TtsVoice; text: string }
 type Progress = (message: string) => void;
@@ -21,7 +22,10 @@ export class SpeechAudioBuffer {
   private pending = new Map<string, Job>();
   private queue: Job[] = [];
   private active: Job | null = null;
-  constructor(synthesize: Synthesizer) { this.synthesize = synthesize; }
+  private retryDelays: readonly number[];
+  constructor(synthesize: Synthesizer, retryDelays: readonly number[] = [1000, 2000]) {
+    this.synthesize = synthesize; this.retryDelays = retryDelays;
+  }
 
   get(segment: SpeechSegment, progress: Progress): Promise<Blob> {
     const key = speechSegmentKey(segment);
@@ -85,13 +89,27 @@ export class SpeechAudioBuffer {
   }
   private async run(job: Job): Promise<void> {
     const { provider, voice, text } = job.segment;
-    const signal = AbortSignal.any([job.controller.signal, AbortSignal.timeout(provider === 'piper' ? 180000 : provider === 'espeak' ? 60000 : 26000)]);
     try {
-      const blob = await this.synthesize(provider, text, voice, signal, message => {
-        if (this.active !== job || signal.aborted) return;
+      const report = (message: string) => {
+        if (this.active !== job || job.controller.signal.aborted) return;
         job.message = message; job.progress?.(message);
-      });
-      signal.throwIfAborted();
+      };
+      let blob: Blob;
+      for (let attempt = 0; ; attempt++) {
+        job.controller.signal.throwIfAborted();
+        // Each retry gets a new deadline. Promotion from prefetch continues the
+        // same request; a timeout cannot consume the next attempt's budget.
+        const signal = AbortSignal.any([job.controller.signal, AbortSignal.timeout(provider === 'piper' ? 180000 : provider === 'espeak' ? 60000 : 26000)]);
+        try {
+          blob = await this.synthesize(provider, text, voice, signal, report);
+          signal.throwIfAborted();
+          break;
+        } catch (error) {
+          if (job.controller.signal.aborted || provider !== 'edge' || attempt >= this.retryDelays.length || !retryableSpeechError(error)) throw error;
+          report(`Đang kết nối lại Edge… (lần thử ${attempt + 2}/${this.retryDelays.length + 1})`);
+          await retryDelay(this.retryDelays[attempt], job.controller.signal);
+        }
+      }
       if (this.active !== job) return;
       if (!blob.size || !/^audio\//.test(blob.type)) throw new Error('Nguồn giọng đọc không trả về âm thanh hợp lệ.');
       this.ready.set(job.key, blob); this.bytes += blob.size;
@@ -107,4 +125,13 @@ export class SpeechAudioBuffer {
       }
     }
   }
+}
+
+function retryDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => { clearTimeout(timer); signal.removeEventListener('abort', abort); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, milliseconds);
+    signal.addEventListener('abort', abort, { once: true });
+  });
 }

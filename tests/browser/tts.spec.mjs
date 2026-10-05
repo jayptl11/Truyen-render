@@ -56,7 +56,7 @@ test('Edge selector fits a small phone and real audio pauses and resumes without
 });
 
 for (const phase of ['catalog', 'audio']) {
-  test(`Edge ${phase} explains Firefox AbortError and permits retry`, async ({ page }) => {
+  test(`Edge ${phase} handles Firefox AbortError with retry`, async ({ page }) => {
     await page.addInitScript(phase => {
       const original = window.fetch.bind(window);
       let failOnce = true;
@@ -84,9 +84,10 @@ for (const phase of ['catalog', 'audio']) {
       await expect(page.getByLabel('Giọng đọc', { exact: true })).toHaveValue('vi-VN-NamMinhNeural');
       await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
       await page.getByRole('button', { name: 'Nghe truyện', exact: true }).click();
-      await expect(page.getByText('Nguồn giọng đọc phản hồi quá lâu hoặc kết nối bị gián đoạn. Thử lại hoặc chọn nguồn giọng khác.', { exact: true })).toBeVisible();
-      await page.getByRole('button', { name: 'Nghe truyện', exact: true }).click();
+      await expect(page.locator('.speech-loading')).toContainText('Đang kết nối lại Edge');
+      await expect(page.locator('.inline-message')).toHaveCount(0);
       await expect(page.getByRole('button', { name: 'Tạm dừng', exact: true })).toBeVisible();
+      await expect(page.locator('.speech-loading')).toHaveCount(0);
     }
   });
 }
@@ -133,4 +134,48 @@ test('Edge buffers slow synthesis and switches manually and automatically withou
   expect(automaticDelay).toBeLessThan(500);
   expect(posts).toBe(3);
   await expect(page.locator('.speech-loading')).toHaveCount(0);
+});
+
+test('Edge reads eleven parts through the rolling buffer and recovers from two HTTP timeouts on part four', async ({ page }) => {
+  test.setTimeout(30000);
+  const attempts = new Map();
+  await page.addInitScript(() => {
+    const NativeAudio = window.Audio; window.longSpeechSources = [];
+    window.Audio = function () {
+      const audio = new NativeAudio(); window.longSpeechAudio = audio;
+      audio.addEventListener('playing', () => {
+        if (window.longSpeechSources.at(-1) !== audio.src) window.longSpeechSources.push(audio.src);
+      });
+      return audio;
+    };
+  });
+  await page.route('**/api/tts', async route => {
+    if (route.request().method() === 'GET') return route.fulfill({ json: { voices } });
+    const text = route.request().postDataJSON().text;
+    attempts.set(text, (attempts.get(text) || 0) + 1);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    if (text === 'Đoạn 4 của chương dài.' && attempts.get(text) < 3) {
+      return route.fulfill({ status: 504, json: { error: 'Edge phản hồi quá lâu.' } });
+    }
+    return route.fulfill({ body: wav(), contentType: 'audio/wav' });
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Dán văn bản', exact: true }).click();
+  await page.getByLabel('Nội dung truyện', { exact: true }).fill('Chương dài\n' + Array.from({ length: 10 }, (_, i) => `Đoạn ${i + 1} của chương dài.`).join('\n'));
+  await page.getByRole('button', { name: 'Đọc / nghe bản gốc', exact: true }).click();
+  await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
+  await page.getByLabel('Nguồn TTS', { exact: true }).selectOption('edge');
+  await expect(page.getByLabel('Giọng đọc', { exact: true })).toHaveValue('vi-VN-NamMinhNeural');
+  await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
+  await page.getByRole('button', { name: 'Nghe truyện', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.longSpeechSources.length)).toBe(1);
+  for (let part = 1; part < 11; part++) {
+    await page.evaluate(() => { window.longSpeechAudio.currentTime = window.longSpeechAudio.duration - 0.01; });
+    await expect.poll(() => page.evaluate(() => window.longSpeechSources.length), { timeout: 8000 }).toBe(part + 1);
+  }
+  await page.evaluate(() => { window.longSpeechAudio.currentTime = window.longSpeechAudio.duration - 0.01; });
+  await expect(page.getByRole('button', { name: 'Nghe truyện', exact: true })).toBeVisible();
+  expect(attempts.get('Đoạn 4 của chương dài.')).toBe(3);
+  expect(attempts.size).toBe(11);
+  await expect(page.locator('.inline-message')).toHaveCount(0);
 });

@@ -694,3 +694,76 @@ test('manual next shares in-flight Edge prefetch, and pause rejects its late rep
     assert.equal(app.requests.filter(r => r.options.method === 'POST').length, 2);
   } finally { app.close(); }
 });
+
+test('Edge recovers from interrupted synthesis around paragraph four and continues beyond the prefetch window', async () => {
+  let failures = 0;
+  const story = '<h1>Chương dài</h1><div id="chapter-content">' + Array.from({ length: 10 }, (_, i) => `<p>Đoạn ${i + 1} của chương dài.</p>`).join('') + '</div>';
+  const app = mount({ fetcher: async (url, options) => {
+    if (url === '/api/tts' && options.method === 'POST' && /Đoạn 4 /.test(JSON.parse(options.body).text) && failures++ < 2) {
+      await wait(100);
+      throw new DOMException('The operation was aborted.', 'AbortError');
+    }
+    if (url === '/api/tts') return remoteResponse(url, options);
+    return new Response(JSON.stringify({ html: story }));
+  } });
+  try {
+    await loadFirstLong(app); await chooseEdge(app);
+    app.click('Nghe truyện'); await until(() => app.audio[0]?.playing);
+    const audio = app.audio[0];
+    for (let position = 1; position < 11; position++) {
+      audio.finish(); await until(() => audio.playing, `playing paragraph ${position}`, 5500);
+    }
+    audio.finish(); await until(() => app.button('Nghe truyện'));
+    assert.ok(failures >= 3); assert.equal(app.w.document.querySelector('.inline-message'), null);
+  } finally { app.close(); }
+});
+async function loadFirstLong(app) {
+  await until(() => app.w.document.querySelector('input[placeholder*="Dán link"]'));
+  app.input(app.w.document.querySelector('input[placeholder*="Dán link"]'), chapter1); await wait(20);
+  app.w.document.querySelector('button[aria-label="Lấy nội dung truyện"]').click();
+  await until(() => app.w.document.body.textContent.includes('Chương dài'));
+}
+
+test('late rejection of the previous audio play promise cannot stop the next paragraph', async () => {
+  const app = mount({ fetcher: remoteResponse });
+  try {
+    await loadFirst(app); await chooseEdge(app);
+    app.click('Nghe truyện'); await until(() => app.audio[0]?.playing);
+    const audio = app.audio[0]; let rejectOld;
+    const play = audio.play.bind(audio);
+    audio.play = () => { void play(); return new Promise((resolve, reject) => { rejectOld = reject; }); };
+    audio.finish(); await until(() => rejectOld && audio.playing);
+    audio.play = play; audio.finish(); await until(() => audio.playing);
+    rejectOld(new DOMException('The operation was aborted.', 'AbortError')); await wait(30);
+    assert.equal(audio.playing, true); assert.equal(app.w.document.querySelector('.inline-message'), null);
+  } finally { app.close(); }
+});
+
+test('failed audio synthesis holds the exact part of a long paragraph and resume does not reread its beginning', async () => {
+  let restored = false;
+  const firstPart = 'A'.repeat(1200); const secondPart = 'B'.repeat(300);
+  const story = `<h1>Chương dài</h1><div id="chapter-content"><p>${firstPart}${secondPart}</p></div>`;
+  const app = mount({ fetcher: (url, options) => {
+    if (url === '/api/tts') {
+      if (options.method === 'POST' && JSON.parse(options.body).text === secondPart && !restored) {
+        return new Response(JSON.stringify({ error: 'Giọng tạm thời không khả dụng.' }), { status: 400 });
+      }
+      return remoteResponse(url, options);
+    }
+    return new Response(JSON.stringify({ html: story }));
+  } });
+  try {
+    await loadFirstLong(app); await chooseEdge(app);
+    app.click('Nghe truyện'); await until(() => app.audio[0]?.playing);
+    app.audio[0].finish(); await until(() => app.audio[0].playing);
+    app.audio[0].finish(); await until(() => app.button('Tiếp tục nghe'));
+    assert.equal(app.audio[0].playing, false);
+    const previous = app.requests.filter(r => r.options.method === 'POST').length;
+    restored = true; app.click('Tiếp tục nghe'); await until(() => app.audio[0].playing);
+    const requests = app.requests.filter(r => r.options.method === 'POST');
+    assert.equal(requests.length, previous + 1);
+    assert.equal(JSON.parse(requests.at(-1).options.body).text, secondPart);
+    assert.equal(requests.filter(r => JSON.parse(r.options.body).text === firstPart).length, 1);
+    assert.equal(app.w.document.querySelector('.inline-message'), null);
+  } finally { app.close(); }
+});

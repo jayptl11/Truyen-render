@@ -68,6 +68,9 @@ test('Piper worker starts and reports a failed model download without leaving pl
   await prepare(page, 'piper');
   await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
   await page.getByRole('button', { name: 'Nghe truyện', exact: true }).click();
-  await expect(page.getByText('Không tải được tài nguyên giọng đọc (HTTP 503).', { exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Nghe truyện', exact: true })).toBeEnabled();
+  await expect(page.locator('.inline-message')).toContainText('Không tải được tài nguyên giọng đọc (HTTP 503).');
+  await expect(page.getByRole('button', { name: 'Tiếp tục nghe', exact: true })).toBeEnabled();
+  await expect(page.locator('.speech-loading')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Dừng đọc', exact: true }).click();
+  await expect(page.locator('.inline-message')).toHaveCount(0);
 });

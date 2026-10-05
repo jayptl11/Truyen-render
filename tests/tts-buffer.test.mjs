@@ -84,3 +84,42 @@ test('cache limits both number and bytes of audio retained in memory', async () 
     buffer.clear();
   }
 });
+
+test('Edge retries transient interruptions with fresh deadlines and shares retries when prefetch is promoted', async () => {
+  const calls = []; const messages = [];
+  const buffer = new SpeechAudioBuffer((provider, text, voice, signal) => new Promise((resolve, reject) => calls.push({ signal, resolve, reject })), [0, 0]);
+  buffer.prefetch([segment('four')]);
+  const task = buffer.get(segment('four'), message => messages.push(message));
+  calls[0].reject(new DOMException('timed out', 'TimeoutError'));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.equal(calls.length, 2); assert.notEqual(calls[0].signal, calls[1].signal);
+  calls[1].reject(new TypeError('connection reset'));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  calls[2].resolve(audio()); await task;
+  assert.equal(calls.length, 3); assert.match(messages[0], /2\/3/); assert.match(messages[1], /3\/3/);
+  buffer.clear();
+});
+
+test('Edge retry is bounded and pause during backoff cancels it without launching another request', async () => {
+  let calls = 0;
+  const exhausted = new SpeechAudioBuffer(async () => { calls++; throw new DOMException('aborted', 'AbortError'); }, [0, 0]);
+  await assert.rejects(exhausted.get(segment('four'), () => {}), error => error.name === 'AbortError');
+  assert.equal(calls, 3); exhausted.clear();
+  calls = 0;
+  const paused = new SpeechAudioBuffer(async () => { calls++; throw new TypeError('offline'); }, [1000, 2000]);
+  const pending = paused.get(segment('four'), () => {});
+  await flush(); paused.cancelPending();
+  await assert.rejects(pending, error => error.name === 'AbortError');
+  await flush(); assert.equal(calls, 1); paused.clear();
+});
+
+test('Edge HTTP timeouts retry but validation errors and device synthesis errors do not', async () => {
+  const errorsCode = buildSync({ entryPoints: ['src/services/tts/errors.ts'], bundle: true, format: 'esm', write: false }).outputFiles[0].text;
+  const { SpeechRequestError, retryableSpeechError } = await import(`data:text/javascript;base64,${Buffer.from(errorsCode).toString('base64')}`);
+  assert.equal(retryableSpeechError(new SpeechRequestError('upstream timeout', 504)), true);
+  assert.equal(retryableSpeechError(new SpeechRequestError('bad voice', 400)), false);
+  let calls = 0;
+  const device = new SpeechAudioBuffer(async () => { calls++; throw new DOMException('timeout', 'TimeoutError'); }, [0, 0]);
+  await assert.rejects(device.get({ ...segment('four'), provider: 'piper' }, () => {}));
+  assert.equal(calls, 1); device.clear();
+});
