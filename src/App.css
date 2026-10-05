@@ -150,11 +150,12 @@ summary::-webkit-details-marker { display: none; }
 .rate-label { color: var(--muted); }
 .speech-progress { height: 2px; max-width: 480px; background: var(--line); margin: 8px auto 0; overflow: hidden; }
 .speech-progress span { display: block; height: 100%; background: var(--accent); transition: width 200ms; }
-.speech-options-panel { position: absolute; bottom: calc(100% + 12px); right: 0; z-index: 50; width: min(310px, calc(100vw - 32px)); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 18px; box-shadow: 0 12px 32px #00000012; max-height: calc(var(--app-height, 100dvh) - 160px); overflow: auto; }
+.speech-options-panel { position: absolute; bottom: calc(100% + 12px); right: 0; z-index: 50; width: min(310px, calc(100vw - 32px)); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 18px; box-shadow: 0 12px 32px #00000012; max-height: var(--speech-options-height, calc(var(--app-height, 100dvh) - 230px)); overflow: auto; overscroll-behavior: contain; }
 .speech-options-panel h3 { font-size: 15px; margin: 0 0 14px; }
 .speech-options-panel label { margin-bottom: 14px; }
 .speech-options-panel select { display: block; margin-top: 6px; }
 .speech-player > .inline-message { max-height: 80px; overflow: auto; margin: 10px 0 0; }
+.speech-loading { max-width: 480px; margin: 6px auto 0; }
 .dialog-backdrop { position: fixed; inset: 0 0 auto; height: var(--app-height, 100dvh); z-index: 90; display: flex; align-items: center; justify-content: center; background: #20282066; padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
 .dialog-card { background: var(--surface); color: var(--ink); border: 1px solid var(--line); border-radius: 10px; width: 100%; max-width: 460px; max-height: 100%; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 24px 64px #00000022; outline: none; }
 .dialog-wide { max-width: 700px; }

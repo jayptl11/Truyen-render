@@ -20,7 +20,7 @@ import { BatchDialog } from './features/translation/BatchDialog';
 import { storage } from './services/storage/local';
 import { createChapter, readProgress, saveProgress } from './services/storage/chapters';
 import { errorMessage } from './services/errors';
-import { useSpeechReader } from './features/tts/useSpeechReader';
+import { useTtsReader } from './features/tts/useTtsReader';
 import { SpeechControls } from './features/tts/SpeechControls';
 import { ReaderView } from './features/reader/ReaderView';
 import { ApiKeySettings } from './features/settings/ApiKeySettings';
@@ -426,7 +426,7 @@ export default function StoryFetcher() {
       await fetchContent(targetUrl, isAutoNav);
   };
 
-  const speech = useSpeechReader({ paragraphs: chunks, contentKey, initialParagraph,
+  const speech = useTtsReader({ paragraphs: chunks, contentKey, initialParagraph,
       onParagraph: paragraph => saveProgress(activeChapterId, readerVersion, paragraph),
       onComplete: () => { reading.complete(); if (isAutoMode && nextChapterUrl) void loadChapter(nextChapterUrl, true); },
   });

@@ -16,7 +16,7 @@ async function until(check, message = 'condition', timeout = 2500) {
   while (!check()) { if (Date.now() - start > timeout) throw Error(`Timed out waiting for ${message}`); await wait(10); }
   await wait(10);
 }
-function mount({ saved = {}, unsupported = false, fetcher, fakeClock = false } = {}) {
+function mount({ saved = {}, unsupported = false, fetcher, fakeClock = false, deviceVoices = [{ name: 'Tiếng Việt thử nghiệm', lang: 'vi-VN', voiceURI: 'vi-test' }] } = {}) {
   const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost:5173', runScripts: 'outside-only', pretendToBeVisual: true });
   const w = dom.window;
   const errors = [];
@@ -37,7 +37,7 @@ function mount({ saved = {}, unsupported = false, fetcher, fakeClock = false } =
   };
   const synthesis = new w.EventTarget();
   synthesis.calls = []; synthesis.current = null; synthesis.pauses = 0; synthesis.resumes = 0; synthesis.cancels = 0;
-  synthesis.getVoices = () => [{ name: 'Tiếng Việt thử nghiệm', lang: 'vi-VN', voiceURI: 'vi-test' }];
+  synthesis.getVoices = () => deviceVoices;
   synthesis.speak = utterance => { synthesis.current = utterance; synthesis.calls.push(utterance); };
   synthesis.cancel = () => { const old = synthesis.current; synthesis.current = null; synthesis.cancels++; old?.onerror?.({ error: 'canceled' }); };
   synthesis.pause = () => { synthesis.pauses++; };
@@ -47,6 +47,20 @@ function mount({ saved = {}, unsupported = false, fetcher, fakeClock = false } =
     w.speechSynthesis = synthesis;
     w.SpeechSynthesisUtterance = class { constructor(text) { this.text = text; } };
   }
+  const audio = [];
+  w.Audio = class {
+    constructor() { this.currentTime = 0; this.playbackRate = 1; this.playing = false; this.plays = 0; audio.push(this); }
+    set src(value) { this.source = value; this.currentTime = 0; }
+    get src() { return this.source; }
+    play() { this.playing = true; this.plays++; return Promise.resolve(); }
+    pause() { this.playing = false; }
+    load() { this.currentTime = 0; }
+    removeAttribute(name) { if (name === 'src') this.src = ''; }
+    finish() { this.playing = false; this.onended?.(); }
+  };
+  let blobId = 0;
+  w.URL.createObjectURL = () => `blob:mock-${++blobId}`;
+  w.URL.revokeObjectURL = () => {};
   const intervals = new Map();
   if (fakeClock) {
     let next = 1;
@@ -62,7 +76,7 @@ function mount({ saved = {}, unsupported = false, fetcher, fakeClock = false } =
     Object.getOwnPropertyDescriptor(prototype, 'value').set.call(element, value);
     element.dispatchEvent(new w.Event(element.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true }));
   };
-  return { dom, w, errors, requests, synthesis, intervals, button, click, input, close() { dom.window.close(); } };
+  return { dom, w, errors, requests, synthesis, audio, intervals, button, click, input, close() { dom.window.close(); } };
 }
 async function loadFirst(app) {
   await until(() => app.w.document.querySelector('input[placeholder*="Dán link"]'));
@@ -150,8 +164,10 @@ test('loads, reads and speaks raw chapters without API keys; next chapter has it
     app.click('Nghe truyện'); await until(() => app.synthesis.calls.length);
     assert.equal(app.synthesis.calls[0].text, 'Chương 1: Bản gốc');
     assert.equal(app.synthesis.calls[0].lang, 'vi-VN');
-    app.click('Tạm dừng'); await wait(20); assert.equal(app.synthesis.pauses, 1);
-    app.click('Tiếp tục nghe'); await wait(20); assert.equal(app.synthesis.resumes, 1);
+    app.click('Tạm dừng'); await wait(20); assert.equal(app.synthesis.current, null);
+    assert.equal(app.synthesis.pauses, 0);
+    const beforeResume = app.synthesis.calls.length;
+    app.click('Tiếp tục nghe'); await until(() => app.synthesis.calls.length === beforeResume + 1);
     app.click('Chương sau');
     await until(() => app.w.document.body.textContent.includes('Nội dung chương 2 chưa dịch.'));
     const stored = cache(app);
@@ -198,6 +214,255 @@ test('TTS finishes current chapter and starts next original chapter without tran
     await until(() => app.synthesis.current?.text === 'Chương 2: Bản gốc', 'second chapter TTS');
     assert.equal(app.requests.length, 2);
     assert.ok(cache(app).every(c => c.translatedContent === ''));
+  } finally { app.close(); }
+});
+
+test('pause cancels a voice that ignores native pause and rejects synchronous and late completion callbacks', async () => {
+  const app = mount();
+  try {
+    await loadFirst(app);
+    const continuous = app.w.document.querySelector('section[aria-label="Điều khiển giọng đọc"] input[type="checkbox"]');
+    continuous.click(); await until(() => cache(app).some(c => c.url === chapter2));
+    app.click('Nghe truyện'); await until(() => app.synthesis.current);
+    app.synthesis.finish(); await wait(20); app.synthesis.finish(); await wait(20);
+    const last = app.synthesis.current;
+    const cancel = app.synthesis.cancel;
+    app.synthesis.cancel = () => { const old = app.synthesis.current; cancel(); old?.onend?.(); };
+    const calls = app.synthesis.calls.length;
+    app.click('Tạm dừng'); await wait(20);
+    assert.equal(app.synthesis.current, null);
+    assert.equal(app.synthesis.pauses, 0);
+    last.onend(); last.onerror({ error: 'voice-unavailable' }); last.onboundary({ charIndex: 8 });
+    await wait(30);
+    assert.equal(app.synthesis.calls.length, calls);
+    assert.ok(app.button('Tiếp tục nghe'));
+    assert.match(app.w.document.querySelector('article').textContent, /Chương 1: Bản gốc/);
+    assert.ok(!app.w.document.body.textContent.includes('voice-unavailable'));
+  } finally { app.close(); }
+});
+
+test('resume starts at the last spoken boundary and stale callbacks cannot interrupt the new utterance', async () => {
+  const app = mount();
+  try {
+    await loadFirst(app); app.click('Nghe truyện'); await until(() => app.synthesis.current);
+    app.synthesis.finish(); await wait(20);
+    const old = app.synthesis.current;
+    const at = old.text.indexOf('chưa');
+    old.onboundary({ charIndex: at });
+    app.click('Tạm dừng'); await wait(20);
+    app.click('Tiếp tục nghe'); await until(() => app.synthesis.current);
+    const resumed = app.synthesis.current;
+    assert.equal(resumed.text, old.text.slice(at));
+    const calls = app.synthesis.calls.length;
+    old.onend(); old.onerror({ error: 'voice-unavailable' }); old.onboundary({ charIndex: 0 });
+    await wait(20);
+    assert.equal(app.synthesis.current, resumed);
+    assert.equal(app.synthesis.calls.length, calls);
+    assert.ok(app.button('Tạm dừng'));
+    const next = resumed.text.indexOf('dịch');
+    resumed.onboundary({ charIndex: next });
+    app.click('Tạm dừng'); await wait(20);
+    app.click('Tiếp tục nghe'); await until(() => app.synthesis.current);
+    assert.equal(app.synthesis.current.text, resumed.text.slice(next));
+    const current = app.synthesis.current;
+    current.onend(); const afterEnd = app.synthesis.calls.length;
+    current.onend(); await wait(20);
+    assert.equal(app.synthesis.calls.length, afterEnd);
+  } finally { app.close(); }
+});
+
+test('selecting paragraphs and changing voice or speed while paused stays silent until explicit resume', async () => {
+  const app = mount();
+  try {
+    await loadFirst(app); app.click('Nghe truyện'); await until(() => app.synthesis.current);
+    app.click('Tạm dừng'); await wait(20);
+    const calls = app.synthesis.calls.length;
+    app.w.document.querySelector('button[aria-label="Đoạn sau"]').click(); await wait(20);
+    app.input(app.w.document.querySelector('select[aria-label="Tốc độ đọc"]'), '1.5');
+    app.input(app.w.document.querySelector('select[aria-label="Giọng đọc"]'), 'vi-test');
+    await wait(20);
+    assert.equal(app.synthesis.current, null);
+    assert.equal(app.synthesis.calls.length, calls);
+    assert.ok(app.button('Tiếp tục nghe'));
+    app.click('Tiếp tục nghe'); await until(() => app.synthesis.current);
+    assert.match(app.synthesis.current.text, /Nội dung chương 1/);
+    assert.equal(app.synthesis.current.rate, 1.5);
+    assert.equal(app.synthesis.current.voice.voiceURI, 'vi-test');
+    app.click('Tạm dừng'); await wait(20);
+    app.w.document.querySelector('button[aria-label="Dừng đọc"]').click(); await wait(20);
+    assert.ok(app.button('Nghe truyện'));
+    assert.equal(app.synthesis.current, null);
+  } finally { app.close(); }
+});
+
+test('without speech boundary events, pause resumes the current short part of a long paragraph', async () => {
+  const app = mount();
+  try {
+    await until(() => app.button('Dán văn bản'));
+    app.click('Dán văn bản'); await wait(20);
+    app.input(app.w.document.querySelector('textarea'), 'Một chương thử nghiệm\n' + Array.from({ length: 45 }, (_, i) => `Câu thứ ${i + 1} trong đoạn truyện dài.`).join(' '));
+    await wait(20); app.click('Đọc / nghe bản gốc'); await until(() => cache(app).length);
+    app.click('Nghe truyện'); await until(() => app.synthesis.current);
+    app.synthesis.finish(); await wait(20); app.synthesis.finish(); await wait(20);
+    const part = app.synthesis.current;
+    assert.ok(part.text.length <= 240);
+    assert.ok(!part.text.startsWith('Câu thứ 1 '));
+    app.click('Tạm dừng'); await wait(20);
+    part.onend(); await wait(20);
+    assert.equal(app.synthesis.current, null);
+    app.click('Tiếp tục nghe'); await until(() => app.synthesis.current);
+    assert.equal(app.synthesis.current.text, part.text);
+  } finally { app.close(); }
+});
+
+const edgeCatalog = [
+  { id: 'vi-VN-NamMinhNeural', name: 'Nam Minh', language: 'vi-VN', gender: 'male' },
+  { id: 'vi-VN-HoaiMyNeural', name: 'Hoài My', language: 'vi-VN', gender: 'female' },
+  { id: 'en-US-GuyNeural', name: 'Guy', language: 'en-US', gender: 'male' },
+  { id: 'en-US-JennyNeural', name: 'Jenny', language: 'en-US', gender: 'female' },
+];
+async function chooseEdge(app) {
+  const field = app.w.document.querySelector('select[aria-label="Nguồn TTS"]');
+  app.input(field, 'edge');
+  await until(() => app.w.document.querySelector('select[aria-label="Giọng đọc"] option[value="vi-VN-NamMinhNeural"]'));
+}
+function remoteResponse(url, options = {}) {
+  if (url === '/api/tts') return options.method === 'POST'
+    ? new Response('mock mp3', { headers: { 'Content-Type': 'audio/mpeg' } })
+    : new Response(JSON.stringify({ voices: edgeCatalog }));
+  return new Response(JSON.stringify({ html: html(1) }));
+}
+
+test('Edge selection filters provider, language and gender and persists the chosen voice', async () => {
+  const app = mount({ fetcher: remoteResponse });
+  try {
+    await loadFirst(app); await chooseEdge(app);
+    app.input(app.w.document.querySelector('select[aria-label="Giới tính giọng đọc"]'), 'female'); await wait(20);
+    const voice = app.w.document.querySelector('select[aria-label="Giọng đọc"]');
+    assert.equal(voice.options.length, 1);
+    assert.equal(voice.value, 'vi-VN-HoaiMyNeural');
+    app.input(app.w.document.querySelector('select[aria-label="Ngôn ngữ đọc"]'), 'en-US'); await wait(20);
+    app.input(app.w.document.querySelector('select[aria-label="Giới tính giọng đọc"]'), 'male'); await wait(20);
+    app.input(voice, 'en-US-GuyNeural'); await wait(20);
+    app.click('Nghe truyện'); await until(() => app.audio[0]?.playing);
+    const body = JSON.parse(app.requests.find(r => r.options.method === 'POST').options.body);
+    assert.equal(body.voice, 'en-US-GuyNeural'); assert.equal(body.language, 'en-US');
+    assert.equal(app.synthesis.calls.length, 0);
+    const saved = JSON.parse(app.w.localStorage.getItem('reader_tts_selection'));
+    assert.deepEqual(saved, { provider: 'edge', language: 'en-US', gender: 'male', voice: 'en-US-GuyNeural' });
+    const restored = mount({ saved: { reader_tts_selection: saved }, fetcher: remoteResponse });
+    try {
+      await until(() => restored.w.document.querySelector('select[aria-label="Giọng đọc"]')?.value === 'en-US-GuyNeural');
+      assert.equal(restored.w.document.querySelector('select[aria-label="Ngôn ngữ đọc"]').value, 'en-US');
+      assert.equal(restored.w.document.querySelector('select[aria-label="Giới tính giọng đọc"]').value, 'male');
+    } finally { restored.close(); }
+  } finally { app.close(); }
+});
+
+test('Google device group uses only available Google voices without inventing gender metadata', async () => {
+  const app = mount({ deviceVoices: [
+    { name: 'Microsoft Voice', lang: 'en-US', voiceURI: 'microsoft-en' },
+    { name: 'Google US English', lang: 'en-US', voiceURI: 'google-en' },
+    { name: 'Google Tiếng Việt', lang: 'vi-VN', voiceURI: 'google-vi' },
+  ] });
+  try {
+    await loadFirst(app);
+    app.input(app.w.document.querySelector('select[aria-label="Nguồn TTS"]'), 'google'); await wait(20);
+    app.input(app.w.document.querySelector('select[aria-label="Ngôn ngữ đọc"]'), 'en-US'); await wait(20);
+    const voices = app.w.document.querySelector('select[aria-label="Giọng đọc"]');
+    assert.equal(voices.options.length, 1); assert.equal(voices.value, 'google-en');
+    assert.equal(app.w.document.querySelector('select[aria-label="Giới tính giọng đọc"] option[value="male"]').disabled, true);
+    app.click('Nghe truyện'); await until(() => app.synthesis.current);
+    assert.equal(app.synthesis.current.voice.voiceURI, 'google-en'); assert.equal(app.synthesis.current.lang, 'en-US');
+    assert.equal(app.requests.length, 1);
+  } finally { app.close(); }
+});
+
+test('pausing Edge during synthesis rejects late audio; loaded audio resumes at its time without another request', async () => {
+  let resolveAudio; let posts = 0;
+  const app = mount({ fetcher: (url, options) => {
+    if (url === '/api/tts' && options.method === 'POST' && ++posts === 1) return new Promise(resolve => { resolveAudio = () => resolve(new Response('late mp3', { headers: { 'Content-Type': 'audio/mpeg' } })); });
+    return remoteResponse(url, options);
+  } });
+  try {
+    await loadFirst(app); await chooseEdge(app);
+    app.click('Nghe truyện'); await until(() => resolveAudio);
+    app.click('Tạm dừng'); await wait(20);
+    resolveAudio(); await wait(30);
+    assert.equal(app.audio.length, 0); assert.ok(app.button('Tiếp tục nghe'));
+    app.click('Tiếp tục nghe'); await until(() => app.audio[0]?.playing);
+    const audio = app.audio[0]; const oldEnd = audio.onended;
+    audio.currentTime = 4.25;
+    app.click('Tạm dừng'); await wait(20);
+    assert.equal(audio.playing, false);
+    oldEnd(); await wait(20); assert.equal(posts, 2);
+    app.click('Tiếp tục nghe'); await until(() => audio.playing);
+    assert.equal(audio.currentTime, 4.25); assert.equal(posts, 2);
+    const currentEnd = audio.onended;
+    app.w.document.querySelector('button[aria-label="Dừng đọc"]').click(); await wait(20);
+    currentEnd(); await wait(20);
+    assert.equal(audio.playing, false); assert.equal(posts, 2);
+    assert.ok(app.button('Nghe truyện'));
+  } finally { app.close(); }
+});
+
+test('changing Edge paragraph, voice and rate while paused stays silent and resumes the selected configuration', async () => {
+  const app = mount({ fetcher: remoteResponse });
+  try {
+    await loadFirst(app); await chooseEdge(app);
+    app.click('Nghe truyện'); await until(() => app.audio[0]?.playing);
+    app.click('Tạm dừng'); await wait(20);
+    const calls = app.requests.length;
+    app.w.document.querySelector('button[aria-label="Đoạn sau"]').click(); await wait(20);
+    app.input(app.w.document.querySelector('select[aria-label="Giới tính giọng đọc"]'), 'female');
+    app.input(app.w.document.querySelector('select[aria-label="Tốc độ đọc"]'), '1.5'); await wait(20);
+    assert.ok(app.button('Tiếp tục nghe')); assert.equal(app.audio[0].playing, false);
+    assert.equal(app.requests.length, calls);
+    app.click('Tiếp tục nghe'); await until(() => app.audio[0]?.playing);
+    const request = app.requests.filter(r => r.options.method === 'POST').at(-1);
+    assert.match(JSON.parse(request.options.body).text, /Nội dung chương 1/);
+    assert.equal(JSON.parse(request.options.body).voice, 'vi-VN-HoaiMyNeural');
+    assert.equal(app.audio[0].playbackRate, 1.5);
+  } finally { app.close(); }
+});
+
+test('Edge catalog failures allow retry and playback works on devices without Web Speech', async () => {
+  let failed = false;
+  const app = mount({ unsupported: true, fetcher: (url, options) => {
+    if (url === '/api/tts' && options.method !== 'POST' && !failed) { failed = true; return new Response(JSON.stringify({ error: 'Edge đang bận' }), { status: 503 }); }
+    return remoteResponse(url, options);
+  } });
+  try {
+    await loadFirst(app);
+    app.input(app.w.document.querySelector('select[aria-label="Nguồn TTS"]'), 'edge');
+    await until(() => app.w.document.body.textContent.includes('Edge đang bận'));
+    assert.equal(app.button('Nghe truyện').disabled, true);
+    app.click('Tải lại danh sách giọng');
+    await until(() => !app.button('Nghe truyện').disabled);
+    app.click('Nghe truyện'); await until(() => app.audio[0]?.playing);
+    assert.equal(app.synthesis.calls.length, 0);
+  } finally { app.close(); }
+});
+
+test('turning off continuous listening while Edge is playing prevents automatic next-chapter playback', async () => {
+  const app = mount({ fetcher: (url, options) => {
+    if (url === '/api/tts') return remoteResponse(url, options);
+    const target = new URL(url, 'http://localhost:5173').searchParams.get('url');
+    return new Response(JSON.stringify({ html: target === chapter1 ? html(1, chapter2) : html(2) }));
+  } });
+  try {
+    await loadFirst(app); await chooseEdge(app);
+    const continuous = app.w.document.querySelector('section[aria-label="Điều khiển giọng đọc"] input[type="checkbox"]');
+    continuous.click(); await until(() => cache(app).some(c => c.url === chapter2));
+    app.click('Nghe truyện'); await until(() => app.audio[0]?.playing);
+    app.audio[0].finish(); await until(() => app.audio[0].playing);
+    app.audio[0].finish(); await until(() => app.audio[0].playing);
+    continuous.click(); await wait(20);
+    app.audio[0].finish(); await until(() => app.button('Nghe truyện'));
+    await wait(20);
+    assert.equal(app.audio[0].playing, false);
+    assert.match(app.w.document.querySelector('article').textContent, /Chương 1: Bản gốc/);
+    assert.equal(app.requests.filter(r => r.options.method === 'POST').length, 3);
   } finally { app.close(); }
 });
 

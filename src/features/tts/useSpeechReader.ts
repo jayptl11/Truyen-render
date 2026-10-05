@@ -18,7 +18,7 @@ export function splitSpeechText(text: string, limit = 240): string[] {
   return parts;
 }
 
-interface SpeechOptions {
+export interface SpeechOptions {
   paragraphs: string[];
   contentKey: string;
   initialParagraph: number;
@@ -41,15 +41,17 @@ export function useSpeechReader(options: SpeechOptions) {
   const paragraphRef = useRef(options.initialParagraph);
   const settingsRef = useRef({ rate, voiceURI, voices });
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const offsetRef = useRef(0);
   const statusRef = useRef<SpeechStatus>('idle');
   useEffect(() => { optionsRef.current = options; });
   useEffect(() => { settingsRef.current = { rate, voiceURI, voices }; }, [rate, voiceURI, voices]);
   const changeStatus = useCallback((value: SpeechStatus) => { statusRef.current = value; setStatus(value); }, []);
   const stop = useCallback(() => {
     generation.current++;
-    if (supported) window.speechSynthesis.cancel();
     utteranceRef.current = null;
+    offsetRef.current = 0;
     changeStatus('idle');
+    if (supported) window.speechSynthesis.cancel();
   }, [supported, changeStatus]);
 
   useEffect(() => {
@@ -63,6 +65,8 @@ export function useSpeechReader(options: SpeechOptions) {
 
   useEffect(() => {
     generation.current++;
+    statusRef.current = 'idle';
+    offsetRef.current = 0;
     if (supported) window.speechSynthesis.cancel();
     utteranceRef.current = null;
     const token = generation.current;
@@ -75,7 +79,7 @@ export function useSpeechReader(options: SpeechOptions) {
     return () => { disposed = true; };
   }, [options.contentKey, options.initialParagraph, options.paragraphs.length, supported, changeStatus]);
 
-  const play = useCallback((start?: number) => {
+  const beginPlayback = useCallback((start?: number, resumeOffset = 0) => {
     if (!supported) { setError('Trình duyệt này không hỗ trợ đọc văn bản.'); return; }
     const paragraphs = optionsRef.current.paragraphs;
     if (!paragraphs.length) return;
@@ -84,31 +88,52 @@ export function useSpeechReader(options: SpeechOptions) {
     const token = generation.current;
     const index = Math.min(Math.max(0, start ?? paragraphRef.current), paragraphs.length - 1);
     changeStatus('playing');
+    // Clear a browser/OS pause left over from a previous speech session.
+    if (window.speechSynthesis.paused) window.speechSynthesis.resume();
     const speakParagraph = (at: number) => {
-      if (token !== generation.current) return;
+      if (token !== generation.current || statusRef.current !== 'playing') return;
       if (at >= paragraphs.length) {
-        changeStatus('idle'); utteranceRef.current = null;
+        changeStatus('idle'); utteranceRef.current = null; offsetRef.current = 0;
         optionsRef.current.onComplete();
         return;
       }
       paragraphRef.current = at;
       setParagraph(at);
       optionsRef.current.onParagraph(at);
-      const parts = splitSpeechText(paragraphs[at]);
+      let offset = at === index ? Math.min(resumeOffset, paragraphs[at].length) : 0;
+      const parts = splitSpeechText(paragraphs[at].slice(offset)).map(text => {
+        const from = paragraphs[at].indexOf(text, offset);
+        offset = from + text.length;
+        return { text, from };
+      });
       const speakPart = (part: number) => {
-        if (token !== generation.current) return;
+        if (token !== generation.current || statusRef.current !== 'playing') return;
         if (part >= parts.length) { speakParagraph(at + 1); return; }
-        const utterance = new SpeechSynthesisUtterance(parts[part]);
+        const { text, from } = parts[part];
+        offsetRef.current = from;
+        const utterance = new SpeechSynthesisUtterance(text);
         const settings = settingsRef.current;
         const voice = settings.voices.find(v => v.voiceURI === settings.voiceURI)
           || settings.voices.find(v => /^vi(?:-|$)/i.test(v.lang));
         if (voice) utterance.voice = voice;
         utterance.lang = voice?.lang || 'vi-VN';
         utterance.rate = settings.rate;
-        utterance.onend = () => { if (token === generation.current) speakPart(part + 1); };
+        const isCurrent = () => token === generation.current && statusRef.current === 'playing' && utteranceRef.current === utterance;
+        utterance.onboundary = event => {
+          if (isCurrent() && Number.isInteger(event.charIndex) && event.charIndex >= 0 && event.charIndex < text.length) {
+            offsetRef.current = from + event.charIndex;
+          }
+        };
+        utterance.onend = () => {
+          if (!isCurrent()) return;
+          utteranceRef.current = null;
+          speakPart(part + 1);
+        };
         utterance.onerror = event => {
-          if (token !== generation.current || ['canceled', 'interrupted'].includes(event.error)) return;
+          if (!isCurrent()) return;
+          utteranceRef.current = null;
           generation.current++; changeStatus('idle');
+          if (['canceled', 'interrupted'].includes(event.error)) return;
           setError(`Không phát được giọng đọc (${event.error}). Hãy chọn giọng khác hoặc thử lại.`);
         };
         utteranceRef.current = utterance;
@@ -120,28 +145,38 @@ export function useSpeechReader(options: SpeechOptions) {
     };
     speakParagraph(index);
   }, [supported, stop, changeStatus]);
+  const play = useCallback((start?: number) => beginPlayback(start), [beginPlayback]);
   const toggle = useCallback(() => {
     if (!supported) return;
-    if (statusRef.current === 'playing') { window.speechSynthesis.pause(); changeStatus('paused'); }
-    else if (statusRef.current === 'paused') { window.speechSynthesis.resume(); changeStatus('playing'); }
+    if (statusRef.current === 'playing') {
+      // Native pause is unreliable on some mobile voices. Cancel the utterance
+      // and invalidate its callbacks before calling into the speech engine.
+      generation.current++;
+      utteranceRef.current = null;
+      changeStatus('paused');
+      window.speechSynthesis.cancel();
+    }
+    else if (statusRef.current === 'paused') beginPlayback(undefined, offsetRef.current);
     else play();
-  }, [supported, changeStatus, play]);
+  }, [supported, changeStatus, play, beginPlayback]);
   const selectParagraph = useCallback((index: number) => {
     const bounded = Math.min(Math.max(0, index), Math.max(0, optionsRef.current.paragraphs.length - 1));
-    if (statusRef.current !== 'idle') play(bounded);
+    if (statusRef.current === 'playing') play(bounded);
     else {
-      paragraphRef.current = bounded; setParagraph(bounded);
+      paragraphRef.current = bounded; offsetRef.current = 0; setParagraph(bounded);
       optionsRef.current.onParagraph(bounded);
     }
   }, [play]);
-  const setRate = (value: number) => {
+  const setRate = useCallback((value: number) => {
+    if (settingsRef.current.rate === value) return;
     settingsRef.current.rate = value; setRateState(value); writeJson('reader_tts_rate', value);
     if (statusRef.current === 'playing') play();
-  };
-  const setVoice = (value: string) => {
+  }, [play]);
+  const setVoice = useCallback((value: string) => {
+    if (settingsRef.current.voiceURI === value) return;
     settingsRef.current.voiceURI = value; setVoiceURI(value); writeJson('reader_tts_voice', value);
     if (statusRef.current === 'playing') play();
-  };
+  }, [play]);
   return { supported, voices, voiceURI, rate, status, paragraph, error, play, toggle, stop, selectParagraph, setRate, setVoice };
 }
 export type SpeechReader = ReturnType<typeof useSpeechReader>;

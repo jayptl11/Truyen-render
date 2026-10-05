@@ -1,0 +1,55 @@
+import { test, expect } from '@playwright/test';
+const voices = [
+  { id: 'vi-VN-NamMinhNeural', name: 'Nam Minh', language: 'vi-VN', gender: 'male' },
+  { id: 'vi-VN-HoaiMyNeural', name: 'Hoài My', language: 'vi-VN', gender: 'female' },
+  { id: 'en-US-GuyNeural', name: 'Guy', language: 'en-US', gender: 'male' },
+];
+function wav() {
+  const bytes = 8000 * 5 * 2;
+  const buffer = Buffer.alloc(44 + bytes);
+  buffer.write('RIFF', 0); buffer.writeUInt32LE(36 + bytes, 4); buffer.write('WAVEfmt ', 8);
+  buffer.writeUInt32LE(16, 16); buffer.writeUInt16LE(1, 20); buffer.writeUInt16LE(1, 22);
+  buffer.writeUInt32LE(8000, 24); buffer.writeUInt32LE(16000, 28); buffer.writeUInt16LE(2, 32); buffer.writeUInt16LE(16, 34);
+  buffer.write('data', 36); buffer.writeUInt32LE(bytes, 40);
+  return buffer;
+}
+test('Edge selector fits a small phone and real audio pauses and resumes without resynthesis', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.addInitScript(() => {
+    const NativeAudio = window.Audio;
+    window.Audio = function () { const audio = new NativeAudio(); window.testTtsAudio = audio; return audio; };
+  });
+  let posts = 0;
+  await page.route('**/api/tts', async route => {
+    if (route.request().method() === 'GET') await route.fulfill({ json: { voices } });
+    else { posts++; await route.fulfill({ body: wav(), contentType: 'audio/wav' }); }
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Dán văn bản', exact: true }).click();
+  await page.getByLabel('Nội dung truyện', { exact: true }).fill('Chương thử nghiệm\nĐoạn đầu tiên.\nĐoạn thứ hai.');
+  await page.getByRole('button', { name: 'Đọc / nghe bản gốc', exact: true }).click();
+  await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
+  await page.getByLabel('Nguồn TTS', { exact: true }).selectOption('edge');
+  await expect(page.getByLabel('Ngôn ngữ đọc', { exact: true })).toBeEnabled();
+  await page.getByLabel('Ngôn ngữ đọc', { exact: true }).selectOption('vi-VN');
+  await page.getByLabel('Giới tính giọng đọc', { exact: true }).selectOption('female');
+  await expect(page.getByLabel('Giọng đọc', { exact: true })).toHaveValue('vi-VN-HoaiMyNeural');
+  await expect(page.getByLabel('Giọng đọc', { exact: true }).locator('option')).toHaveCount(1);
+  const box = await page.locator('.speech-options-panel').boundingBox();
+  expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(320);
+  expect(box.y).toBeGreaterThanOrEqual(0); expect(box.y + box.height).toBeLessThanOrEqual(640);
+  await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
+  await page.getByRole('button', { name: 'Nghe truyện', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.testTtsAudio?.currentTime || 0)).toBeGreaterThan(0.1);
+  await page.getByRole('button', { name: 'Tạm dừng', exact: true }).click();
+  expect(await page.evaluate(() => window.testTtsAudio.paused)).toBe(true);
+  const pausedAt = await page.evaluate(() => window.testTtsAudio.currentTime);
+  await page.waitForTimeout(120);
+  expect(await page.evaluate(() => window.testTtsAudio.currentTime)).toBeCloseTo(pausedAt, 2);
+  await page.getByRole('button', { name: 'Tiếp tục nghe', exact: true }).click();
+  await expect.poll(() => page.evaluate(() => window.testTtsAudio.currentTime)).toBeGreaterThan(pausedAt);
+  expect(posts).toBe(1);
+  await page.getByRole('button', { name: 'Dừng đọc', exact: true }).click();
+  expect(await page.evaluate(() => window.testTtsAudio.paused)).toBe(true);
+  await expect(page.getByRole('button', { name: 'Nghe truyện', exact: true })).toBeVisible();
+});

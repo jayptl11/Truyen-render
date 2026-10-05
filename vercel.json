@@ -1,5 +1,6 @@
 {
   "functions": {
-    "api/story.ts": { "maxDuration": 30 }
+    "api/story.ts": { "maxDuration": 30 },
+    "api/tts.ts": { "maxDuration": 30 }
   }
 }

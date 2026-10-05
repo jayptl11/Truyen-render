@@ -21,7 +21,7 @@ npm test
 
 1. Nhập liên kết chương và bấm **Lấy nội dung truyện** / Enter, hoặc chọn **Dán văn bản** rồi **Đọc / nghe bản gốc**.
 2. Nội dung gốc được hiển thị và lưu trong **Thư viện** ngay; không cần API key.
-3. Bấm **Nghe truyện**, chọn giọng/tốc độ, hoặc chọn một đoạn để nghe từ đó.
+3. Mở **Giọng và tốc độ**, chọn **Nguồn TTS → Ngôn ngữ → Nam/nữ → Giọng** rồi bấm **Nghe truyện**. Có thể chọn một đoạn để nghe từ đó.
 4. Nếu muốn dịch, mở cấu hình AI, nhập khóa của nhà cung cấp rồi bấm **Dịch (tùy chọn)**. Chuyển giữa **Bản gốc** và **Bản dịch** để chọn nội dung đọc/nghe.
 5. **Cài đặt** có nghe tiếp chương sau, hẹn giờ ngủ, giới hạn số chương, dịch khi tải chương mới, công cụ AI và dịch hàng loạt.
 
@@ -45,6 +45,7 @@ Nếu môi trường có Chromium sẵn, có thể dùng `PLAYWRIGHT_CHROMIUM_EX
 - `src/components`: thành phần dùng chung, gồm hộp thoại quản lý focus.
 - `src/features/reader`: hiển thị bản gốc/bản dịch, tải trước chương, thống kê.
 - `src/features/tts`: phiên đọc giọng, chia văn bản thành đoạn nhỏ, chọn giọng/tốc độ.
+- `api/tts.ts`, `server/tts.ts`: danh sách giọng Edge và tạo âm thanh MP3 trên server.
 - `src/features/library`: thư viện, bookmark, xuất file và lưu danh sách chương.
 - `src/features/translation`: tác vụ dịch hàng loạt và lưu/khôi phục tiến độ.
 - `src/features/settings`: cấu hình AI và đọc/nghe.
@@ -58,19 +59,26 @@ Nếu môi trường có Chromium sẵn, có thể dùng `PLAYWRIGHT_CHROMIUM_EX
 - `tests/reader.test.mjs`: kiểm tra hồi quy các luồng chính bằng DOM và SpeechSynthesis mô phỏng.
 - `tests/browser/responsive.spec.mjs`: kiểm tra bố cục và thao tác bằng Chromium thật.
 - `tests/server.test.mjs`: kiểm tra API, địa chỉ nội bộ, chuyển hướng và giới hạn trang.
+- `tests/tts-server.test.mjs`, `tests/browser/tts.spec.mjs`: API giọng Edge và tạm dừng/tiếp tục audio trong Chromium.
 
 ## Triển khai Vercel
 
-Chọn framework **Vite**, build command `npm run build`, output directory `dist`, Node.js 22 hoặc 24. Đặt Root Directory ở thư mục chứa `package.json` và `api/`. Vercel tự triển khai `api/story.ts` thành Node function; `vercel.json` đặt thời gian tối đa 30 giây. Không cần API key cho việc lấy truyện. Sau khi cập nhật code phải có deployment mới để API xuất hiện; chỉ tải thư mục `dist` lên hosting tĩnh sẽ không có server này.
+Chọn framework **Vite**, build command `npm run build`, output directory `dist`, Node.js 22 hoặc 24. Đặt Root Directory ở thư mục chứa `package.json` và `api/`. Vercel tự triển khai `api/story.ts` và `api/tts.ts` thành Node function; `vercel.json` đặt thời gian tối đa 30 giây. Không cần API key để lấy truyện hoặc dùng Edge. Sau khi cập nhật code phải có deployment mới để API xuất hiện; chỉ tải thư mục `dist` lên hosting tĩnh sẽ không có server này.
 
 Khi chạy `npm run dev`, Vite phục vụ cùng API để kiểm tra local. `npm run preview` chỉ phục vụ frontend tĩnh; kiểm tra API dùng dev server hoặc deployment Vercel.
 
 ## Phạm vi hỗ trợ
 
-TTS dùng Web Speech API và giọng cài trên thiết bị, không cần dịch vụ TTS hay API key. Có phát/tạm dừng, dừng, chuyển đoạn, tô sáng đoạn, nhớ vị trí, hẹn giờ và nghe tiếp chương sau. Khả năng có giọng tiếng Việt và phát khi khóa màn hình phụ thuộc hệ điều hành/trình duyệt; kiểm tra trên thiết bị thật trước khi dùng cho nghe nền.
+Nguồn **Giọng trên thiết bị** dùng Web Speech API. **Google · trên thiết bị** lọc giọng Google mà trình duyệt cung cấp; đây không phải Google Cloud và lựa chọn này chỉ bật khi có giọng Google. Giọng thiết bị không cung cấp metadata giới tính nên được ghi là chưa có thông tin. **Microsoft Edge · trực tuyến** dùng Read Aloud qua server và `msedge-tts`, không cần API key; lọc ngôn ngữ/nam/nữ theo danh sách Microsoft trả về. Lựa chọn giọng được nhớ trên thiết bị.
+
+Edge gửi phần truyện đang nghe đến dịch vụ Microsoft. Cần mạng và API `/api/tts`; giới hạn mỗi lượt 1500 ký tự, 20 giây và 2 MB âm thanh. Player chia đoạn dài thành phần tối đa 1200 ký tự và đổi tốc độ ngay khi phát, không cần tạo lại âm thanh. Kết nối Read Aloud có thể thay đổi hoặc bị giới hạn; khi lỗi có thể thử lại danh sách giọng hoặc chuyển sang nguồn trên thiết bị.
+
+Có phát/tạm dừng, dừng, chuyển đoạn, tô sáng đoạn, nhớ vị trí, hẹn giờ và nghe tiếp chương sau. Phát khi khóa màn hình phụ thuộc hệ điều hành/trình duyệt; kiểm tra trên thiết bị thật trước khi dùng cho nghe nền.
+
+Với giọng thiết bị, tạm dừng hủy lượt phát và vô hiệu hóa callback cũ để tránh giọng đọc vẫn chạy trên trình duyệt không hỗ trợ `pause()` ổn định. Tiếp tục nghe bắt đầu từ vị trí từ gần nhất mà giọng đọc báo về; nếu không có sự kiện vị trí, đọc lại phần ngắn đang phát (tối đa 240 ký tự). Edge tạm dừng tại thời gian của audio, hủy yêu cầu còn đang tải và bỏ qua phản hồi đến muộn. Chọn đoạn hoặc đổi giọng/tốc độ khi tạm dừng vẫn giữ im lặng đến khi bấm tiếp tục.
 
 Lấy truyện ưu tiên `/api/story` trên server Vercel, sau đó thử `api.allorigins.win` và `api.codetabs.com` nếu tải hoặc phân tích thất bại. Server chỉ truy cập HTTP/HTTPS công khai, kiểm tra và ghim IP kết nối, kiểm tra lại từng chuyển hướng, giới hạn 20 giây/2 MB và không gửi cookie đăng nhập. Hỗ trợ các selector nội dung phổ biến, bao gồm `.chapter-content`, `.entry-content` và `.reading-content`. Website thay cấu trúc, yêu cầu đăng nhập, chống bot hoặc dựng nội dung bằng JavaScript vẫn có thể không lấy được; khi đó có thể dán văn bản trực tiếp. API này tải HTML, không chạy trình duyệt hoặc vượt qua xác minh của website nguồn.
 
-API key được nhập trong giao diện và lưu trên thiết bị. AI là chức năng tùy chọn và có thể tính phí theo nhà cung cấp. Test dùng phản hồi AI và giọng đọc mô phỏng, không gọi dịch vụ trả phí hay xác minh âm thanh thực tế.
+API key cho AI được nhập trong giao diện và lưu trên thiết bị. AI là chức năng tùy chọn và có thể tính phí theo nhà cung cấp. Test dùng phản hồi AI, Web Speech và server Edge mô phỏng; browser test phát file WAV để kiểm tra player. Test không gọi dịch vụ trả phí hoặc xác minh chất lượng giọng Edge thực tế.
 
 Thư viện vẫn dùng localStorage với tối đa 500 chương; dung lượng thực tế tùy trình duyệt. Khi ghi thất bại, ứng dụng báo lỗi để người dùng xuất dữ liệu trước khi đóng trang. Chưa có đồng bộ tài khoản hay service worker cho offline toàn bộ ứng dụng.
