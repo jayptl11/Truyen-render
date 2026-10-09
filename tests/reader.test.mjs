@@ -208,6 +208,23 @@ test('manual text creates a separate saved chapter after loading a URL', async (
   } finally { app.close(); }
 });
 
+test('new manual text keeps earlier chapters and saving unchanged text does not duplicate it', async () => {
+  const app = mount();
+  try {
+    await until(() => app.button('Dán văn bản'));
+    app.click('Dán văn bản'); await wait(20);
+    app.input(app.w.document.querySelector('#manual-text'), 'Chương 1\nGiữ chương đầu.'); await wait(20);
+    app.click('Đọc / nghe bản gốc'); await until(() => cache(app).length === 1);
+    const first = cache(app)[0];
+    app.click('Đọc / nghe bản gốc'); await wait(30);
+    assert.equal(cache(app).length, 1);
+    app.input(app.w.document.querySelector('#manual-text'), 'Chương 2\nChương mới.'); await wait(20);
+    app.click('Đọc / nghe bản gốc'); await until(() => cache(app).length === 2);
+    assert.equal(cache(app).find(chapter => chapter.url === first.url).content, first.content);
+    assert.notEqual(cache(app)[0].url, first.url);
+  } finally { app.close(); }
+});
+
 test('TTS finishes current chapter and starts next original chapter without translation', async () => {
   const app = mount();
   try {

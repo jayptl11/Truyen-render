@@ -16,7 +16,8 @@ export function useChapterLibrary() {
       previous.current = saved;
       setChapters(current => {
         const merged = new Map((cleared.current ? [] : saved.filter(item => !removed.current.has(item.url))).map(item => [item.url, item]));
-        for (const item of current) if (!merged.has(item.url) || changed.current.has(item.url)) merged.set(item.url, item);
+        // Only edits made during loading override IndexedDB, never the legacy backup.
+        for (const item of current) if (changed.current.has(item.url)) merged.set(item.url, item);
         return [...merged.values()].sort((a, b) => b.timestamp - a.timestamp);
       });
       setReady(true);

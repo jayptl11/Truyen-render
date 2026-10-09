@@ -48,6 +48,17 @@ test('chapter history no longer silently drops content after 500 entries', async
   assert.equal(upsertChapter(chapters, { url: 'manual:new', content: 'New' }).length, 601);
 });
 
+test('export follows each book catalog even when chapters are fetched or translated out of order', async () => {
+  const { orderExportChapters } = await load('src/services/storage/export.ts');
+  const chapters = [{ url: 'book-a/chapter-2', timestamp: 1 }, { url: 'book-b/chapter-1', timestamp: 2 }, { url: 'book-a/chapter-1', timestamp: 99 }];
+  const books = [
+    { chapters: [{ url: 'book-a/chapter-2', index: 2 }, { url: 'book-a/chapter-1', index: 1 }] },
+    { chapters: [{ url: 'book-b/chapter-1', index: 1 }] },
+  ];
+  assert.deepEqual(orderExportChapters(chapters, books).map(chapter => chapter.url), ['book-a/chapter-1', 'book-a/chapter-2', 'book-b/chapter-1']);
+  assert.equal(chapters[0].url, 'book-a/chapter-2');
+});
+
 test('offline audio evicts unpinned clips, protects pinned clips and reports capacity without losing saved data', async () => {
   globalThis.indexedDB = new IDBFactory();
   const cache = await load('src/services/storage/audioCache.ts');

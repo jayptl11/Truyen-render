@@ -8,6 +8,7 @@ import { createChapter } from '../../services/storage/chapters';
 import { audioStorageInfo, clearAudioCache } from '../../services/storage/audioCache';
 import { errorMessage } from '../../services/errors';
 interface Props {
+  initialTab?: 'books' | 'sources';
   chapters: Chapter[]; books: Book[]; selected: string[];
   onToggle: (id: string) => void; onSelectAll: () => void; onDelete: () => void; onClear: () => void;
   onOpen: (id: string) => void; onClose: () => void;
@@ -17,7 +18,7 @@ interface Props {
 }
 export function LibraryDialog(props: Props) {
   const [query, setQuery] = useState('');
-  const [tab, setTab] = useState<'books' | 'chapters' | 'sources'>('books');
+  const [tab, setTab] = useState<'books' | 'chapters' | 'sources'>(props.initialTab || 'books');
   const [bookId, setBookId] = useState('');
   const [catalogPage, setCatalogPage] = useState(0);
   const book = props.books.find(item => item.id === bookId);
@@ -83,7 +84,7 @@ export function LibraryDialog(props: Props) {
       <h3>Tìm trên Webnovel.vn</h3><form className="book-import" onSubmit={event => { event.preventDefault(); void run(async signal => { setTask('Đang tìm truyện…'); const found = await searchSource(sourceQuery, signal); signal.throwIfAborted(); setResults(found); setSearched(true); }); }}><input aria-label="Tên truyện trên nguồn" required value={sourceQuery} onChange={event => setSourceQuery(event.target.value)} placeholder="Tên truyện hoặc tác giả"/><button className="button-secondary" disabled={!!task}>Tìm truyện trên nguồn</button></form>
       {searched && !results.length && <p className="field-hint">Không tìm thấy truyện. Thử tên khác hoặc dán liên kết bên dưới.</p>}
       <ul className="source-search-results">{results.map(result => <li key={result.url}><button disabled={!!task} onClick={() => importBook(result.url)}><strong>{result.title}</strong><span>Thêm vào thư viện →</span></button></li>)}</ul>
-      <h3>Thêm bằng liên kết từ nhiều website</h3><p className="field-hint">Dán liên kết trang truyện để lấy tên, bìa và mục lục trong HTML. Nếu chỉ có liên kết chương, dùng Thêm truyện ở thanh điều hướng.</p>
+      <h3>Thêm bằng liên kết từ nhiều website</h3><p className="field-hint">Dán liên kết trang truyện để lấy tên, bìa và mục lục trong HTML. Nếu chỉ có liên kết chương, dùng Thêm chương ở thanh điều hướng.</p>
       <form onSubmit={event => { event.preventDefault(); importBook(); }} className="book-import"><input aria-label="Liên kết trang truyện" type="url" required placeholder="https://webnovel.vn/tien-nghich/" value={link} onChange={event => setLink(event.target.value)}/><button className="button-primary" disabled={!!task}><Link size={16}/>Thêm truyện vào thư viện</button></form>
       {SOURCES.map(source => <article className="source-card" key={source.id}><strong>{source.name}</strong><p className="field-hint">{source.description}</p><a href={source.origin} target="_blank" rel="noreferrer">Mở nguồn để tìm truyện ↗</a></article>)}
       <p className="field-hint">Website khác vẫn dùng bộ nhận diện nội dung chung, không giới hạn ở danh sách này. Trang cần đăng nhập, xác minh hoặc tải truyện bằng JavaScript có thể cần tích hợp riêng.</p>

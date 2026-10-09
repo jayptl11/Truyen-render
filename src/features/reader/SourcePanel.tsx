@@ -9,11 +9,12 @@ interface Props {
   onFetch: () => void; onRead: () => void; onTranslate: () => void; onCancel: () => void;
   style: TranslationStyle; onStyle: (style: TranslationStyle) => void;
   settings: ReactNode; onSettings: () => void;
-  recent: Chapter[]; onChapter: (id: string) => void; onLibrary: () => void;
+  recent: Chapter[]; onChapter: (id: string) => void; onLibrary: () => void; onAddBook: () => void;
 }
 export function SourcePanel(props: Props) {
   return <div className="source-inner">
     <div className="section-heading"><span className="eyebrow">Bắt đầu ở đây</span><h1>Thêm một chương.</h1><p>Lấy nội dung từ liên kết, hoặc dán văn bản của bạn.</p></div>
+    <button className="text-button add-book-link" onClick={props.onAddBook}>Thêm cả truyện / mục lục<ArrowUpRight size={16}/></button>
     <div className="source-tabs" role="group" aria-label="Nguồn nội dung">
       <button aria-pressed={props.mode === 'url'} onClick={() => props.onMode('url')}><Link size={17}/>Liên kết</button>
       <button aria-pressed={props.mode === 'manual'} onClick={() => props.onMode('manual')}><FileText size={17}/>Dán văn bản</button>

@@ -20,7 +20,7 @@ import { LibraryDialog } from './features/library/LibraryDialog';
 import { BookmarkDialog } from './features/library/BookmarkDialog';
 import { ExportDialog } from './features/library/ExportDialog';
 import { ReaderSettings } from './features/settings/ReaderSettings';
-import { downloadText, printText } from './services/storage/export';
+import { downloadText, printText, orderExportChapters } from './services/storage/export';
 import { useBatchTranslation } from './features/translation/useBatchTranslation';
 import { BatchDialog } from './features/translation/BatchDialog';
 import { storage } from './services/storage/local';
@@ -118,6 +118,7 @@ export default function StoryFetcher() {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<number[]>([]);
   const [showSearch, setShowSearch] = useState(false);
+  const [searchHit, setSearchHit] = useState<{ key: string; index: number } | null>(null);
   const [zenMode, setZenMode] = useState(false);
   const reading = useReadingStats(activeChapterId);
   const readingStats = reading.stats;
@@ -130,6 +131,10 @@ export default function StoryFetcher() {
 
   const chunkRefs = useRef<(HTMLParagraphElement | null)[]>([]);
   const containerRef = useRef<HTMLDivElement>(null);
+  const focusContainerRef = useRef<HTMLDivElement>(null);
+  const focusChunkRefs = useRef<(HTMLParagraphElement | null)[]>([]);
+  const [libraryInitialTab, setLibraryInitialTab] = useState<'books' | 'sources'>('books');
+  const openLibrary = (tab: 'books' | 'sources' = 'books') => { setLibraryInitialTab(tab); setShowCache(true); };
     const hasAnyTranslationKey = useCallback(() => {
             const hasGemini = apiKeys.some(k => k && k.trim().length > 0);
             const hasChatgpt = chatgptKeys.some(k => k && k.trim().length > 0);
@@ -296,9 +301,9 @@ export default function StoryFetcher() {
   };
 
   const jumpToSearchResult = (index: number) => {
-      if (chunkRefs.current[index]) {
-          chunkRefs.current[index]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      }
+      setSearchHit({ key: contentKey, index }); setShowSearch(false);
+      const refs = zenMode ? focusChunkRefs : chunkRefs;
+      refs.current[index]?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 
   // --- EXPORT FUNCTIONS ---
@@ -335,7 +340,7 @@ export default function StoryFetcher() {
   };
 
   const exportText = () => {
-      const selected = chapters.filter(chapter => selectedChaptersForExport.includes(chapter.url)).sort((a, b) => a.timestamp - b.timestamp);
+      const selected = orderExportChapters(chapters.filter(chapter => selectedChaptersForExport.includes(chapter.url)), books);
       return selected.length ? selected.map(chapter => (readerVersion === 'translated' ? chapter.translatedContent || chapter.content : chapter.content).replace(/\n\n=-=\s*$/, '').trim()).join(exportTxtSeparatorStyle === 'line' ? `\n\n${'='.repeat(50)}\n\n` : '\n\n') : textToRead;
   };
   const exportToTxt = () => {
@@ -348,14 +353,17 @@ export default function StoryFetcher() {
       setShowExportMenu(false); setSelectedChaptersForExport([]);
   };
 
-  // Zen mode keyboard shortcut
+  // Keep the familiar find shortcut, without intercepting editing or other dialogs.
   useEffect(() => {
       const handleKeyPress = (e: KeyboardEvent) => {
+          const target = e.target instanceof Element ? e.target : null;
+          if (target?.closest('[role="dialog"]')) return;
           if (e.key === 'Escape' && zenMode) {
               setZenMode(false);
-          } else if (e.key === 'f' && e.ctrlKey && content) {
+          } else if (e.key.toLowerCase() === 'f' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && content
+              && !target?.closest('input, textarea, select, [contenteditable="true"]')) {
               e.preventDefault();
-              setZenMode(!zenMode);
+              setSearchResults([]); setShowSearch(true);
           }
       };
       window.addEventListener('keydown', handleKeyPress);
@@ -469,9 +477,11 @@ export default function StoryFetcher() {
       return () => clearInterval(timer);
   }, [timeLeft, stopSpeech]);
   const handleScroll = () => {
-      if (speech.status !== 'idle' || !activeChapterId || !containerRef.current) return;
-      const top = containerRef.current.getBoundingClientRect().top;
-      const index = chunkRefs.current.findIndex(element => element && element.getBoundingClientRect().bottom > top + 30);
+      const container = zenMode ? focusContainerRef.current : containerRef.current;
+      const refs = zenMode ? focusChunkRefs : chunkRefs;
+      if (speech.status !== 'idle' || !activeChapterId || !container) return;
+      const top = container.getBoundingClientRect().top;
+      const index = refs.current.findIndex(element => element && element.getBoundingClientRect().bottom > top + 30);
       if (index >= 0) saveProgress(activeChapterId, readerVersion, index);
   };
   const restored = useRef(false);
@@ -487,6 +497,9 @@ export default function StoryFetcher() {
   useEffect(() => {
       chunkRefs.current[speechParagraph]?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' });
   }, [speechParagraph, contentKey]);
+  useEffect(() => {
+      if (!zenMode) chunkRefs.current[readProgress(activeChapterId, readerVersion)]?.scrollIntoView?.({ block: 'start' });
+  }, [zenMode, activeChapterId, readerVersion]);
   useEffect(() => {
       if (pendingPlay && !loading && !translating && chunks.length) {
           setPendingPlay(false); handingOff.current = false; playSpeech(0);
@@ -602,7 +615,7 @@ export default function StoryFetcher() {
   };
 
   return (
-    <AppShell theme={theme} active={mobileTab} onView={setMobileTab} onLibrary={() => setShowCache(true)} onSettings={() => setShowMobileSettings(true)}
+    <AppShell theme={theme} active={mobileTab} onView={setMobileTab} onLibrary={() => openLibrary()} onSettings={() => setShowMobileSettings(true)}
       source={<SourcePanel mode={inputMode} onMode={mode => {
           if (mode === 'manual') {
             speech.stop(); requestEpoch.current++; loadController.current?.abort(); setLoading(false); setTranslating(false);
@@ -611,22 +624,27 @@ export default function StoryFetcher() {
           }
           setInputMode(mode);
         }} url={url} onUrl={setUrl} content={content}
-        onContent={text => { speech.stop(); requestEpoch.current++; setTranslating(false); setContent(text); setTranslatedContent(''); setReaderVersion('original'); }}
+        onContent={text => {
+          speech.stop(); requestEpoch.current++; loadController.current?.abort(); setLoading(false); setTranslating(false);
+          setActiveChapterId(''); setUrl(''); setPendingPlay(false); setBookmarkPosition(null); setNextChapterUrl(null); setPrevChapterUrl(null);
+          setContent(text); setTranslatedContent(''); setReaderVersion('original');
+        }}
         loading={loading} translating={translating} error={error} onFetch={() => { void fetchContent(); }} onRead={() => setMobileTab('reader')}
         onTranslate={() => { void translateContent(); }} onCancel={() => { loadController.current?.abort(); setPendingPlay(false); }}
         style={translationStyle} onStyle={setTranslationStyle} onSettings={() => setShowApiKeyInput(!showApiKeyInput)}
-        recent={chapters} onChapter={id => { void loadChapter(id); }} onLibrary={() => setShowCache(true)}
+        recent={chapters} onChapter={id => { void loadChapter(id); }} onLibrary={() => openLibrary()} onAddBook={() => openLibrary('sources')}
         settings={showApiKeyInput && <ApiKeySettings keys={{ gemini: apiKeys, groq: groqKeys, qwen: qwenKeys, deepseek: deepseekKeys, chatgpt: chatgptKeys }}
           priority={aiPriority} onMove={moveAiProvider} onReset={() => setAiPriority(DEFAULT_AI_PRIORITY)} onClose={() => setShowApiKeyInput(false)}
           onKey={(provider, index, value) => ({ gemini: updateKey, groq: updateGroqKey, qwen: updateQwenKey, deepseek: updateDeepseekKey, chatgpt: updateChatgptKey })[provider](index, value)} />}
       />}
       reader={<ReaderView version={readerVersion} hasTranslation={!!translatedContent} onVersion={version => { speech.stop(); setPendingPlay(false); setReaderVersion(version); }}
         paragraphs={chunks} selectedParagraph={speech.paragraph} onSelectParagraph={speech.selectParagraph}
+        highlightedParagraph={searchHit?.key === contentKey ? searchHit.index : null}
         containerRef={containerRef} paragraphRefs={chunkRefs} fontSize={fontSize} theme={theme} loading={loading}
         previous={prevChapterUrl} next={nextChapterUrl} onNavigate={target => { void loadChapter(target); }} onScroll={handleScroll} onAdd={() => setMobileTab('input')}
         toolbar={<ReaderToolbar title={chunks[0] || ''} hasContent={!!content} bookmarked={bookmarks.some(bookmark => bookmark.url === activeChapterId)}
           status={isAutoMode && nextChapterUrl ? preloadedData ? 'Chương sau đã sẵn sàng' : 'Đang tải trước chương sau' : readerVersion === 'translated' ? 'Đang đọc bản dịch' : content ? 'Đang đọc bản gốc' : ''}
-          onBookmark={toggleBookmark} onBookmarks={() => setShowBookmarks(true)} onSearch={() => setShowSearch(true)} onExport={() => setShowExportMenu(true)}
+          onBookmark={toggleBookmark} onBookmarks={() => setShowBookmarks(true)} onSearch={() => { setSearchResults([]); setShowSearch(true); }} onExport={() => setShowExportMenu(true)}
           onFocus={() => setZenMode(true)} onAppearance={() => setShowAppearance(true)} onSettings={() => setShowMobileSettings(true)} />}
         footer={<SpeechControls onExpand={() => setShowPlayer(true)} speech={speech} count={chunks.length} autoNext={isAutoMode} onAutoNext={() => { setIsAutoMode(!isAutoMode); setChaptersReadCount(0); }} />}
       >
@@ -666,7 +684,7 @@ export default function StoryFetcher() {
 
       {showBatchPanel && <BatchDialog batch={batch} initialUrl={url} hasKeys={hasAnyTranslationKey()} onClose={() => setShowBatchPanel(false)} onConfigure={() => { setShowBatchPanel(false); setShowApiKeyInput(true); setMobileTab('input'); }} />}
 
-      {showCache && <LibraryDialog chapters={chapters} selected={selectedChaptersForDelete}
+      {showCache && <LibraryDialog initialTab={libraryInitialTab} chapters={chapters} selected={selectedChaptersForDelete}
         books={books} onBook={bookLibrary.save} onRemoveBook={book => { bookLibrary.remove(book.id); library.remove(book.chapters.map(chapter => chapter.url)); }}
         onChapter={library.add} activeChapter={activeChapterId} canDownloadAudio={!!speech.selectedVoice && speech.canCacheAudio}
         onDownloadAudio={async (chapter, signal) => {
@@ -691,7 +709,11 @@ export default function StoryFetcher() {
         separator={exportTxtSeparatorStyle} onSeparator={setExportTxtSeparatorStyle} />}
 
       {showStats && <StatsDialog stats={readingStats} onClear={reading.clear} onClose={() => setShowStats(false)} />}
-      {zenMode && content && <FocusReader paragraphs={chunks} fontSize={fontSize} onFontSize={changeFontSize} onClose={() => setZenMode(false)}
+      {zenMode && content && <FocusReader paragraphs={chunks} contentKey={contentKey}
+        selectedParagraph={speech.status === 'idle' ? readProgress(activeChapterId, readerVersion) : speech.paragraph}
+        highlightedParagraph={searchHit?.key === contentKey ? searchHit.index : null} onSelectParagraph={speech.selectParagraph}
+        containerRef={focusContainerRef} paragraphRefs={focusChunkRefs} onScroll={handleScroll}
+        fontSize={fontSize} onFontSize={changeFontSize} onClose={() => setZenMode(false)}
         footer={<SpeechControls onExpand={() => setShowPlayer(true)} speech={speech} count={chunks.length} autoNext={isAutoMode} onAutoNext={() => { setIsAutoMode(!isAutoMode); setChaptersReadCount(0); }} />} />}
 
     </AppShell>

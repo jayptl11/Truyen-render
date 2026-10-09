@@ -24,18 +24,22 @@ Vite tự tìm Python trong `.venv/bin/python`; nếu đã cài `edge-tts` ở m
 
 ## Luồng sử dụng
 
-1. **Thư viện → Nguồn truyện** để tìm Webnovel hoặc thêm liên kết trang truyện, xem bìa/thông tin và mục lục. Mục lục nhiều trang có tải trang tiếp, tải hết và cập nhật. Có thể tải khoảng chương; tải lại tiếp tục dùng phần đã lưu.
+1. Bấm **Thêm cả truyện / mục lục** ở trang bắt đầu, hoặc **Thư viện → Nguồn truyện**, để tìm Webnovel hoặc thêm liên kết trang truyện, xem bìa/thông tin và mục lục. Mục lục nhiều trang có tải trang tiếp, tải hết và cập nhật. Có thể tải khoảng chương; tải lại tiếp tục dùng phần đã lưu.
 2. Nhập liên kết chương và bấm **Lấy nội dung truyện** / Enter, hoặc chọn **Dán văn bản** rồi **Đọc / nghe bản gốc**.
 3. Nội dung gốc được hiển thị và lưu trong **Thư viện** ngay; không cần API key.
 4. Mở **Giọng và tốc độ**, chọn **Nguồn TTS → Ngôn ngữ → Nam/nữ → Giọng** rồi bấm **Nghe truyện**. Có thể chọn một đoạn để nghe từ đó.
 5. Nếu muốn dịch, mở cấu hình AI, nhập khóa của nhà cung cấp rồi bấm **Dịch (tùy chọn)**. Chuyển giữa **Bản gốc** và **Bản dịch** để chọn nội dung đọc/nghe.
 6. **Cài đặt** có nghe tiếp chương sau, hẹn giờ ngủ, giới hạn số chương, dịch khi tải chương mới, công cụ AI và dịch hàng loạt.
 
+Thay văn bản nhập tay rồi lưu sẽ tạo chương mới, giữ nguyên chương trước; bấm lưu lại khi chưa thay văn bản không tạo bản trùng. Xuất nhiều chương theo thứ tự mục lục của từng truyện.
+
 Thư viện chuyển sang IndexedDB, không còn cắt lịch sử ở 500 chương. Lần đầu di chuyển dữ liệu `reader_translated_cache` và tiến độ trong một transaction; đánh dấu sau khi commit. Giữ localStorage cũ làm bản dự phòng và giữ nguyên bookmark. Khi trình duyệt không có IndexedDB, tiếp tục dùng localStorage. Thư viện chứa cả chương gốc và bản dịch. Chương tải từ web dùng URL nguồn làm ID; văn bản dán tay dùng ID `manual:<uuid>` riêng. Vị trí đọc/nghe được lưu theo chương và phiên bản. Lấy lại bản gốc không xóa bản dịch nếu nội dung gốc không đổi.
 
 ## Giao diện và kiểm tra trình duyệt
 
 Từ 1100px, trang dùng hai cột: thêm nội dung bên trái và đọc/nghe bên phải. Màn hình nhỏ hơn dùng từng trang với thanh điều hướng dưới. Thanh nghe nằm ngoài vùng cuộn truyện; hộp thoại cuộn riêng, bố cục tính vùng an toàn và chiều cao hiển thị khi mở bàn phím. Có ba màu nền, cỡ chữ 14–32px và hỗ trợ giảm chuyển động.
+
+Ctrl+F / Cmd+F mở tìm kiếm trong chương khi không nhập liệu. Chọn kết quả đóng hộp thoại, cuộn đến và đánh dấu đoạn tìm được. Chế độ đọc tập trung lưu vị trí cuộn, theo đoạn đang nghe và giữ vị trí khi quay về trang đọc.
 
 ```sh
 npx playwright install chromium

@@ -1,3 +1,14 @@
+import type { Book, Chapter } from '../../types/story';
+
+export function orderExportChapters(chapters: Chapter[], books: Book[]): Chapter[] {
+  const order = new Map(books.flatMap((book, bookIndex) => book.chapters.map(chapter => [chapter.url, { bookIndex, index: chapter.index }] as const)));
+  return [...chapters].sort((a, b) => {
+    const left = order.get(a.url), right = order.get(b.url);
+    return (left?.bookIndex ?? books.length) - (right?.bookIndex ?? books.length)
+      || (left?.index ?? 0) - (right?.index ?? 0) || a.timestamp - b.timestamp;
+  });
+}
+
 /** Escape story text before inserting it in a print document. */
 export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!);

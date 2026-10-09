@@ -9,7 +9,7 @@ interface Props {
 export function AppShell({ theme, active, onView, onLibrary, onSettings, source, reader, children }: Props) {
   useViewport();
   const navigation = <>
-    <button onClick={() => onView('input')} aria-current={active === 'input' ? 'page' : undefined}><Plus size={19}/><span>Thêm truyện</span></button>
+    <button onClick={() => onView('input')} aria-current={active === 'input' ? 'page' : undefined}><Plus size={19}/><span>Thêm chương</span></button>
     <button onClick={() => onView('reader')} aria-current={active === 'reader' ? 'page' : undefined}><BookOpen size={19}/><span>Đọc</span></button>
     <button onClick={onLibrary}><Library size={19}/><span>Thư viện</span></button>
     <button onClick={onSettings}><Settings2 size={19}/><span>Cài đặt</span></button>

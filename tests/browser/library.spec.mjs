@@ -91,6 +91,6 @@ test('expanded player fits a small phone and seeks audio while keeping pause and
   const slider = dialog.getByRole('slider', { name: 'Tua âm thanh' }); await slider.focus(); await slider.press('Home'); await slider.press('ArrowRight');
   expect(await page.evaluate(() => window.expandedTestAudio.currentTime)).toBeCloseTo(0.1, 1);
   await dialog.getByRole('button', { name: 'Tiếp tục nghe', exact: true }).click(); await expect.poll(() => page.evaluate(() => window.expandedTestAudio.currentTime)).toBeGreaterThan(0.2);
-  await dialog.getByRole('button', { name: 'Đóng Trình nghe' }).click(); await page.getByRole('navigation', { name: 'Điều hướng chính' }).getByRole('button', { name: 'Thêm truyện', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Đóng Trình nghe' }).click(); await page.getByRole('navigation', { name: 'Điều hướng chính' }).getByRole('button', { name: 'Thêm chương', exact: true }).click();
   await expect(page.getByRole('region', { name: 'Đang nghe' })).toBeVisible(); await page.getByRole('button', { name: 'Tạm dừng phiên nghe' }).click(); expect(await page.evaluate(() => window.expandedTestAudio.paused)).toBe(true);
 });
