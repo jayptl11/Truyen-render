@@ -10,39 +10,48 @@ import { speechError } from '../../services/tts/errors';
 interface Selection { provider: TtsProvider; language: string; gender: GenderFilter; voice: string }
 function savedSelection(): Selection {
   const saved = readJson<Partial<Selection>>('reader_tts_selection', {});
-  return { provider: ['device', 'google', 'edge', 'piper', 'espeak'].includes(saved.provider || '') ? saved.provider! : 'device',
+  return { provider: ['device', 'google', 'edge', 'vieneu', 'piper', 'espeak'].includes(saved.provider || '') ? saved.provider! : 'device',
     language: typeof saved.language === 'string' ? saved.language : 'vi-VN',
     gender: ['all', 'male', 'female', 'unknown'].includes(saved.gender || '') ? saved.gender! : 'all',
     voice: typeof saved.voice === 'string' ? saved.voice : readJson<string>('reader_tts_voice', '') };
+}
+function validVoices(value: unknown): TtsVoice[] {
+  return Array.isArray(value) ? value.filter((v): v is TtsVoice => v && typeof v.id === 'string' && typeof v.name === 'string' && typeof v.language === 'string' && ['male', 'female', 'unknown'].includes(v.gender)) : [];
 }
 export function useTtsReader(options: SpeechOptions) {
   const device = useSpeechReader(options);
   const [selection, setSelection] = useState(savedSelection);
   const [edgeVoices, setEdgeVoices] = useState<TtsVoice[]>([]);
+  const [vieneuVoices, setVieneuVoices] = useState(() => validVoices(readJson<unknown>('reader_vieneu_voices', [])));
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [catalogError, setCatalogError] = useState('');
   const [retry, setRetry] = useState(0);
   const devices = useMemo(() => device.voices.map((voice): TtsVoice => ({ id: voice.voiceURI, name: voice.name, language: voice.lang.replace(/_/g, '-'), gender: 'unknown' })), [device.voices]);
   const googleVoices = useMemo(() => devices.filter(voice => /google/i.test(voice.name + ' ' + voice.id)), [devices]);
   useEffect(() => {
-    if (selection.provider !== 'edge') return;
+    if (!['edge', 'vieneu'].includes(selection.provider)) return;
+    const isVieNeu = selection.provider === 'vieneu';
+    const source = isVieNeu ? 'VieNeu' : 'Edge';
     const controller = new AbortController();
     const token = controller.signal;
     const signal = AbortSignal.any([token, AbortSignal.timeout(25000)]);
     queueMicrotask(() => { if (!token.aborted) { setCatalogLoading(true); setCatalogError(''); } });
-    void fetch('/api/tts', { signal }).then(async response => {
-      const data = await response.json().catch(() => { throw new Error('API giọng Edge chưa sẵn sàng. Kiểm tra deployment Vercel và thử lại.'); });
-      if (!response.ok) throw new Error(data.error || 'Không tải được danh sách giọng Edge.');
-      if (!Array.isArray(data.voices)) throw new Error('Danh sách giọng Edge không hợp lệ.');
-      const voices = data.voices.filter((v: TtsVoice) => v && typeof v.id === 'string' && typeof v.name === 'string' && typeof v.language === 'string' && ['male', 'female', 'unknown'].includes(v.gender));
-      if (!voices.length) throw new Error('Edge chưa có giọng đọc khả dụng.');
-      if (!token.aborted) setEdgeVoices(voices);
+    void fetch(isVieNeu ? '/api/vieneu' : '/api/tts', { signal }).then(async response => {
+      const data = await response.json().catch(() => { throw new Error(`API giọng ${source} chưa sẵn sàng. Kiểm tra máy chủ và thử lại.`); });
+      if (!response.ok) throw new Error(data.error || `Không tải được danh sách giọng ${source}.`);
+      const voices = validVoices(data.voices);
+      if (!voices.length) throw new Error(`${source} chưa có giọng đọc khả dụng.`);
+      if (!token.aborted) {
+        if (isVieNeu) { setVieneuVoices(voices); writeJson('reader_vieneu_voices', voices); }
+        else setEdgeVoices(voices);
+      }
     }).catch(error => { if (!token.aborted) setCatalogError(speechError(error, signal)); })
       .finally(() => { if (!token.aborted) setCatalogLoading(false); });
     return () => controller.abort();
   }, [selection.provider, retry]);
-  const audioProvider = ['edge', 'piper', 'espeak'].includes(selection.provider);
-  const voices = selection.provider === 'edge' ? edgeVoices : selection.provider === 'piper' ? PIPER_VOICES : selection.provider === 'espeak' ? ESPEAK_VOICES : selection.provider === 'google' ? googleVoices : devices;
+  const remoteProvider = ['edge', 'vieneu'].includes(selection.provider);
+  const audioProvider = ['edge', 'vieneu', 'piper', 'espeak'].includes(selection.provider);
+  const voices = selection.provider === 'edge' ? edgeVoices : selection.provider === 'vieneu' ? vieneuVoices : selection.provider === 'piper' ? PIPER_VOICES : selection.provider === 'espeak' ? ESPEAK_VOICES : selection.provider === 'google' ? googleVoices : devices;
   const languages = useMemo(() => [...new Set(voices.map(v => v.language))].sort(), [voices]);
   const language = languages.includes(selection.language) ? selection.language : languages.find(lang => lang === 'vi-VN') || languages[0] || selection.language;
   const languageVoices = voices.filter(v => v.language === language);
@@ -82,11 +91,11 @@ export function useTtsReader(options: SpeechOptions) {
     voices: filteredVoices, voiceURI: chosen?.id || '', setVoice, play,
     provider: selection.provider, setProvider, language, languages, setLanguage,
     gender: selection.gender, genders: [...new Set(languageVoices.map(v => v.gender))], setGender,
-    googleAvailable: googleVoices.length > 0, catalogLoading: selection.provider === 'edge' && catalogLoading,
-    catalogError: selection.provider === 'edge' ? catalogError : '', retryCatalog: () => setRetry(value => value + 1),
+    googleAvailable: googleVoices.length > 0, catalogLoading: remoteProvider && catalogLoading,
+    catalogError: remoteProvider ? catalogError : '', retryCatalog: () => setRetry(value => value + 1),
     loading: audioProvider && audio.loading, loadingMessage: audioProvider ? audio.loadingMessage : '',
     voiceDownloadBytes: chosen?.downloadBytes,
-    canPlay: audioProvider ? !!chosen && (selection.provider !== 'edge' || !catalogLoading) : selection.provider === 'google' ? !!chosen : device.supported,
+    canPlay: audioProvider ? !!chosen && (!remoteProvider || !catalogLoading) : selection.provider === 'google' ? !!chosen : device.supported,
   };
 }
 export type TtsReader = ReturnType<typeof useTtsReader>;

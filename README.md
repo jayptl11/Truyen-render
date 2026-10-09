@@ -59,8 +59,10 @@ Nếu môi trường có Chromium sẵn, có thể dùng `PLAYWRIGHT_CHROMIUM_EX
 - `src/engine/playback`: PlaybackSession độc lập React, hủy callback cũ, chia phần, chuẩn bị phần tiếp, lưu vị trí.
 - `src/features/tts`: giao diện chọn nguồn/ngôn ngữ/nam nữ/giọng, player nhỏ và mở rộng, Media Session và Wake Lock tùy chọn.
 - `api/tts.py`, `server/edge_tts_service.py`: Python `edge-tts`, danh sách giọng và MP3 trên Vercel.
+- `api/vieneu.ts`, `server/vieneu.ts`: proxy giọng VieNeu v3 Turbo; `services/vieneu/` chạy model riêng bằng ONNX/CPU.
 - `server/tts.ts`, `server/tts-handler.ts`, `server/tts_cli.py`: cầu nối Vite tới cùng service Python khi phát triển.
 - `src/services/tts`: catalog Piper/eSpeak, adapter âm thanh và worker tạo WAV trên thiết bị.
+- `src/services/tts/piper.ts`: chạy ONNX theo cấu hình từng model và chọn speaker; `piper-phonemes.ts` ánh xạ âm vị theo bảng của model để tránh lỗi Gather vượt giới hạn.
 - `src/features/library`: thư viện, bookmark, xuất file và lưu danh sách chương.
 - `src/features/translation`: tác vụ dịch hàng loạt và lưu/khôi phục tiến độ.
 - `src/features/settings`: cấu hình AI và đọc/nghe.
@@ -77,6 +79,12 @@ Nếu môi trường có Chromium sẵn, có thể dùng `PLAYWRIGHT_CHROMIUM_EX
 - `tests/test_edge_tts.py`, `tests/tts-server.test.mjs`: API Python, validation, timeout, cache và cầu nối Vite.
 - `tests/browser/tts.spec.mjs`, `tests/browser/offline-tts.spec.mjs`: player, lỗi AbortError, selector và WAV eSpeak thực tế, gồm nghe tiếp khi ngắt mạng.
 
+## VieNeu-TTS v3 Turbo miễn phí
+
+Chạy `npm run vieneu` để khởi động dịch vụ model riêng, sau đó chạy web như bình thường và chọn **Nguồn TTS → VieNeu v3 Turbo · máy chủ riêng**. Danh sách giọng, nam/nữ và tên hiển thị lấy từ SDK trên server. Player hỗ trợ tốc độ, tạm dừng/tiếp tục, retry, chia phần 240 ký tự và cache âm thanh; danh sách giọng được lưu để nghe lại clip đã có khi server tạm ngừng.
+
+Cần cài môi trường Python/model theo [hướng dẫn VieNeu](services/vieneu/README.md). Local mặc định dùng `http://127.0.0.1:8000`; deployment đặt `VIENEU_BASE_URL` trỏ tới dịch vụ thật, và `VIENEU_API_KEY` nếu bật xác thực. Các biến này chỉ dùng ở server, không đưa vào frontend. Model miễn phí theo Apache-2.0; việc tự host vẫn dùng CPU/RAM và dung lượng của máy chủ.
+
 ## Triển khai Vercel
 
 Chọn framework **Vite**, build command `npm run build`, output directory `dist`, Node.js 22 hoặc 24. Đặt Root Directory ở thư mục chứa `package.json`, `requirements.txt` và `api/`. Vercel triển khai `api/story.ts` thành Node function và **`api/tts.py` thành Python function**, cài `edge-tts==7.2.8` từ `requirements.txt`; `.python-version` chọn Python 3.12. `vercel.json` đặt thời gian tối đa 30 giây. Không cần thêm `pip install` vào npm build hoặc API key. Sau khi cập nhật code phải có deployment mới để API xuất hiện; chỉ tải thư mục `dist` lên hosting tĩnh sẽ không có server này.
@@ -87,9 +95,13 @@ Khi chạy `npm run dev`, Vite phục vụ cùng API để kiểm tra local. `np
 
 Nguồn **Giọng trên thiết bị** dùng Web Speech API. **Google · trên thiết bị** lọc giọng Google mà trình duyệt cung cấp; đây không phải Google Cloud và lựa chọn này chỉ bật khi có giọng Google. Giọng thiết bị không cung cấp metadata giới tính nên được ghi là chưa có thông tin. **Microsoft Edge · trực tuyến** dùng Read Aloud qua server Python và `edge-tts`, không cần API key; lọc ngôn ngữ/nam/nữ theo danh sách Microsoft trả về. Edge không phụ thuộc giọng Web Speech của Firefox. Lựa chọn giọng được nhớ trên thiết bị.
 
-**Piper · neural trên thiết bị** dùng `@mintplex-labs/piper-tts-web` và ONNX Runtime trong Web Worker. Có ba model tiếng Việt (VAIS 1000, 25hours, VIVOS) cùng hai model tiếng Anh. Lần bấm nghe đầu tiên tải model từ Hugging Face (khoảng 28–64 MB) và bộ chạy WASM. Model lưu trong OPFS, runtime lưu trong Cache Storage khi trình duyệt cho phép. Không tải model khi chỉ chọn giọng. Chưa có metadata giới tính đáng tin cậy nên không gán nam/nữ cho model Piper. Tốc độ tạo giọng phụ thuộc CPU/RAM; thiết bị yếu có thể cần chờ lâu.
+**Piper · neural trên thiết bị** dùng phonemizer từ `@mintplex-labs/piper-tts-web` 1.0.5 và ONNX Runtime trong Web Worker. Có ba model tiếng Việt (VAIS 1000, 25hours, VIVOS) cùng hai model tiếng Anh. VIVOS mở đủ 65 speaker thành 65 lựa chọn giọng, dùng chung một model; tổng cộng 67 lựa chọn Piper tiếng Việt. Lần bấm nghe đầu tiên tải model từ Hugging Face (khoảng 28–64 MB) và bộ chạy WASM. Model lưu trong OPFS, runtime lưu trong Cache Storage khi trình duyệt cho phép. Không tải model khi chỉ chọn giọng. Bảng âm vị lấy từ cấu hình riêng của model; các âm vị ngoài bảng bị bỏ qua theo cách Piper xử lý, không ép chỉ số hoặc đổi giọng. Chưa có metadata giới tính đáng tin cậy nên không gán nam/nữ cho model Piper. Tốc độ tạo giọng phụ thuộc CPU/RAM; thiết bị yếu có thể cần chờ lâu.
 
-**eSpeak NG · trên thiết bị** dùng package `espeak-ng` trong Web Worker, tải WASM khoảng 19 MB lần đầu rồi tạo WAV tại máy. Hỗ trợ tiếng Việt và một số ngôn ngữ khác, nam/nữ là biến thể giọng tổng hợp. Giọng kém tự nhiên hơn Edge/Piper nhưng không cần server hoặc model neural. Sau khi bộ đọc được tải, có thể tạo thêm âm thanh khi mất mạng trong phiên đang mở. Dừng/hủy vô hiệu hóa worker cũ để kết quả đến muộn không tự phát. Bộ nhớ lưu phụ thuộc dung lượng/chế độ riêng tư; app shell và chương đã lưu mở offline qua service worker ở bản production. Xem [giấy phép và nguồn thư viện](THIRD_PARTY_NOTICES.md).
+**eSpeak NG · trên thiết bị** dùng package `espeak-ng` trong Web Worker, tải WASM khoảng 19 MB lần đầu rồi tạo WAV tại máy. Hỗ trợ tiếng Việt và một số ngôn ngữ khác, mỗi ngôn ngữ có ba biến thể nam và ba biến thể nữ tổng hợp. Giọng kém tự nhiên hơn Edge/Piper nhưng không cần server hoặc model neural. Sau khi bộ đọc được tải, có thể tạo thêm âm thanh khi mất mạng trong phiên đang mở. Dừng/hủy vô hiệu hóa worker cũ để kết quả đến muộn không tự phát. Bộ nhớ lưu phụ thuộc dung lượng/chế độ riêng tư; app shell và chương đã lưu mở offline qua service worker ở bản production. Xem [giấy phép và nguồn thư viện](THIRD_PARTY_NOTICES.md).
+
+Piper/eSpeak không tính phí API theo ký tự. VIVOS có giấy phép dữ liệu phi thương mại CC BY-NC-SA 4.0; 25hours ghi giấy phép chưa rõ. Giao diện hiển thị thông tin này khi chọn giọng, cần xác minh điều kiện trước khi dùng trong sản phẩm thương mại.
+
+Kiểm tra Piper thật: đặt các file ONNX chính thức `vi_VN-25hours_single-low.onnx`, `vi_VN-vivos-x_low.onnx`, `vi_VN-vais1000-medium.onnx` trong một thư mục, rồi đặt `PIPER_MODEL_DIR` trỏ tới thư mục đó và chạy `npm run test:browser -- tests/browser/piper-live.spec.mjs`. Bài kiểm tra dùng trọng số thật, tạo WAV cho cả hai speaker đầu/cuối của VIVOS và các model còn lại; không mô phỏng ONNX. Không đặt biến này thì bài kiểm tra được bỏ qua để bộ test thường không tự tải 150 MB. Nguồn cấu hình nằm trong [fixtures Piper](tests/fixtures/piper/README.md).
 
 Edge gửi phần truyện đang nghe đến dịch vụ Microsoft. Cần mạng và API `/api/tts`; giới hạn mỗi lượt 1500 ký tự, 20 giây và 2 MB âm thanh. Player chia đoạn dài thành phần tối đa 1200 ký tự và đổi tốc độ ngay khi phát, không cần tạo lại âm thanh. Kết nối Read Aloud có thể thay đổi hoặc bị giới hạn; khi lỗi có thể thử lại danh sách giọng hoặc chuyển sang nguồn trên thiết bị.
 

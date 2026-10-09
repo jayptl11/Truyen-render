@@ -32,5 +32,8 @@ public/tts/
 
 # Local Python environment
 .venv/
+.venv-vieneu/
+services/vieneu/.venv/
+services/vieneu/.cache/
 __pycache__/
 *.pyc

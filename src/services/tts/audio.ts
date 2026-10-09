@@ -27,16 +27,17 @@ async function localAudio(provider: AudioProvider, text: string, voice: TtsVoice
   });
 }
 async function generateAudio(provider: AudioProvider, text: string, voice: TtsVoice, signal: AbortSignal, progress: (message: string) => void): Promise<Blob> {
-  if (provider !== 'edge') {
+  if (provider !== 'edge' && provider !== 'vieneu') {
     const task = localQueue.catch(() => {}).then(() => { signal.throwIfAborted(); return localAudio(provider, text, voice, signal, progress); });
     localQueue = task; return task;
   }
-  progress('Đang chuẩn bị giọng Edge…');
-  const response = await fetch('/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  const source = provider === 'vieneu' ? 'VieNeu' : 'Edge';
+  progress(`Đang chuẩn bị giọng ${source}…`);
+  const response = await fetch(provider === 'vieneu' ? '/api/vieneu' : '/api/tts', { method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ voice: voice.id, language: voice.language, text }), signal });
   if (!response.ok) {
     const failure = await response.json().catch(() => null);
-    throw new SpeechRequestError(failure?.error || `Không tạo được giọng Edge (HTTP ${response.status}).`, response.status);
+    throw new SpeechRequestError(failure?.error || `Không tạo được giọng ${source} (HTTP ${response.status}).`, response.status);
   }
   return response.blob();
 }

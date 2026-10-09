@@ -1,6 +1,7 @@
 {
   "functions": {
     "api/story.ts": { "maxDuration": 30 },
-    "api/tts.py": { "maxDuration": 30 }
+    "api/tts.py": { "maxDuration": 30 },
+    "api/vieneu.ts": { "maxDuration": 30 }
   }
 }

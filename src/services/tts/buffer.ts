@@ -110,8 +110,8 @@ export class SpeechAudioBuffer {
           signal.throwIfAborted();
           break;
         } catch (error) {
-          if (job.controller.signal.aborted || provider !== 'edge' || attempt >= this.retryDelays.length || !retryableSpeechError(error)) throw error;
-          report(`Đang kết nối lại Edge… (lần thử ${attempt + 2}/${this.retryDelays.length + 1})`);
+          if (job.controller.signal.aborted || !['edge', 'vieneu'].includes(provider) || attempt >= this.retryDelays.length || !retryableSpeechError(error)) throw error;
+          report(`Đang kết nối lại ${provider === 'vieneu' ? 'VieNeu' : 'Edge'}… (lần thử ${attempt + 2}/${this.retryDelays.length + 1})`);
           await retryDelay(this.retryDelays[attempt], job.controller.signal);
         }
       }

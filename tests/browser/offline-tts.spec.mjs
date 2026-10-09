@@ -56,11 +56,46 @@ test('Piper exposes Vietnamese model choices without downloading models on selec
   page.on('request', request => calls.push(request.url()));
   await prepare(page, 'piper');
   const voices = page.getByLabel('Giọng đọc', { exact: true });
-  await expect(voices.locator('option')).toHaveCount(3);
+  await expect(voices.locator('option')).toHaveCount(67);
   await voices.selectOption('vi_VN-vivos-x_low');
   await expect(page.locator('.speech-options-panel')).toContainText('28 MB');
+  await expect(page.locator('.speech-options-panel')).toContainText('phi thương mại');
+  await voices.selectOption('vi_VN-vivos-x_low#64');
+  await expect(voices).toHaveValue('vi_VN-vivos-x_low#64');
   await expect(page.getByLabel('Giới tính giọng đọc', { exact: true }).locator('option[value="female"]')).toHaveAttribute('disabled', '');
   expect(calls.some(url => /huggingface|\.onnx|\/tts\/piper|\/tts\/onnx/.test(url))).toBe(false);
+});
+
+test('all six free Vietnamese eSpeak variants create different local audio', async ({ page }) => {
+  test.setTimeout(60000);
+  await page.addInitScript(() => {
+    window.variantBlobs = [];
+    const NativeWorker = window.Worker;
+    window.Worker = function (...args) {
+      const worker = new NativeWorker(...args);
+      worker.addEventListener('message', event => { if (event.data.blob) window.variantBlobs.push(event.data.blob); });
+      return worker;
+    };
+  });
+  await prepare(page, 'espeak');
+  const hashes = [];
+  await expect(page.getByLabel('Giọng đọc', { exact: true }).locator('option')).toHaveCount(6);
+  for (const voice of ['vi+m1', 'vi+m2', 'vi+m3', 'vi+f1', 'vi+f2', 'vi+f3']) {
+    await page.getByLabel('Giọng đọc', { exact: true }).selectOption(voice);
+    await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
+    await page.getByRole('button', { name: 'Nghe từ đoạn 1', exact: true }).click();
+    const before = await page.evaluate(() => window.variantBlobs.length);
+    await page.getByRole('button', { name: 'Nghe truyện', exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.variantBlobs.length), { timeout: 15000 }).toBeGreaterThan(before);
+    hashes.push(await page.evaluate(async index => {
+      const bytes = await window.variantBlobs[index].arrayBuffer();
+      return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), value => value.toString(16).padStart(2, '0')).join('');
+    }, before));
+    await expect(page.locator('.inline-message')).toHaveCount(0);
+    await page.getByRole('button', { name: 'Dừng đọc', exact: true }).click();
+    await page.getByLabel('Tùy chọn giọng đọc', { exact: true }).click();
+  }
+  expect(new Set(hashes).size).toBe(6);
 });
 
 test('Piper worker starts and reports a failed model download without leaving playback active', async ({ page }) => {

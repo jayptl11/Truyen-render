@@ -33,6 +33,7 @@ import { ApiKeySettings } from './features/settings/ApiKeySettings';
 import { translateText, analyzeText, normalizeAiPriority, DEFAULT_AI_PRIORITY } from './services/ai/client';
 import { fetchRawStoryData } from './services/storySources/client';
 import type { AiProvider, TranslationStyle, BookmarkEntry } from './types/story';
+import type { AudioProvider } from './types/tts';
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { RotateCw, X } from 'lucide-react';
 
@@ -688,9 +689,9 @@ export default function StoryFetcher() {
         books={books} onBook={bookLibrary.save} onRemoveBook={book => { bookLibrary.remove(book.id); library.remove(book.chapters.map(chapter => chapter.url)); }}
         onChapter={library.add} activeChapter={activeChapterId} canDownloadAudio={!!speech.selectedVoice && speech.canCacheAudio}
         onDownloadAudio={async (chapter, signal) => {
-          if (!speech.selectedVoice || !speech.canCacheAudio) throw new Error('Chọn Edge, Piper hoặc eSpeak trước khi tải âm thanh.');
+          if (!speech.selectedVoice || !speech.canCacheAudio) throw new Error('Chọn Edge, VieNeu, Piper hoặc eSpeak trước khi tải âm thanh.');
           speech.prepareDownload();
-          await downloadChapterAudio(chapter, speech.provider as 'edge' | 'piper' | 'espeak', speech.selectedVoice, signal);
+          await downloadChapterAudio(chapter, speech.provider as AudioProvider, speech.selectedVoice, signal);
         }}
         player={speech.status !== 'idle' && <CompactPlayer speech={speech} title={chunks[0] || ''} onOpen={() => { setShowCache(false); setMobileTab('reader'); }} onExpand={() => { setShowCache(false); setShowPlayer(true); }}/>}
 

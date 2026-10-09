@@ -7,6 +7,7 @@
     "predev": "node scripts/prepare-tts.mjs",
     "prebuild": "node scripts/prepare-tts.mjs",
     "dev": "vite",
+    "vieneu": "node scripts/start-vieneu.mjs",
     "build": "tsc -b && vite build && node scripts/build-service-worker.mjs",
     "lint": "eslint .",
     "preview": "vite preview",

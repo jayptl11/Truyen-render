@@ -58,7 +58,7 @@ export class PlaybackSession {
   }
   private voiceKey() { return `${this.settings.provider}:${this.settings.voice?.id || ''}`; }
   private segment(text: string): SpeechSegment { return { provider: this.settings.provider, voice: this.settings.voice!, text }; }
-  private parts(paragraph: number) { return splitSpeechText(this.settings.options.paragraphs[paragraph] || '', this.settings.provider === 'piper' ? 240 : 1200); }
+  private parts(paragraph: number) { return splitSpeechText(this.settings.options.paragraphs[paragraph] || '', ['piper', 'vieneu'].includes(this.settings.provider) ? 240 : 1200); }
   private estimate(segment: SpeechSegment) { return this.durations.get(speechSegmentKey(segment)) || Math.max(2, segment.text.split(/\s+/).length / 3); }
   private ahead(): SpeechSegment[] {
     if (!this.settings.voice) return [];
@@ -66,7 +66,7 @@ export class PlaybackSession {
     let seconds = 0;
     const append = (paragraphs: string[], start: number, part: number) => {
       for (let line = start; line < paragraphs.length && result.length < 20 && seconds < 45; line++) {
-        const pieces = splitSpeechText(paragraphs[line], this.settings.provider === 'piper' ? 240 : 1200);
+        const pieces = splitSpeechText(paragraphs[line], ['piper', 'vieneu'].includes(this.settings.provider) ? 240 : 1200);
         for (let index = line === start ? part : 0; index < pieces.length && result.length < 20 && seconds < 45; index++) {
           const segment = this.segment(pieces[index]); result.push(segment); seconds += this.estimate(segment) / this.settings.rate;
         }

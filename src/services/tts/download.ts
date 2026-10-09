@@ -10,7 +10,7 @@ export async function downloadChapterAudio(chapter: Chapter, provider: AudioProv
   const abort = () => buffer.cancelPending(); signal.addEventListener('abort', abort, { once: true });
   try {
     for (const paragraph of chapter.content.replace(/\*\*/g, '').split(/\n+/).map(value => value.trim()).filter(Boolean)) {
-      for (const text of splitSpeechText(paragraph, provider === 'piper' ? 240 : 1200)) {
+      for (const text of splitSpeechText(paragraph, ['piper', 'vieneu'].includes(provider) ? 240 : 1200)) {
         signal.throwIfAborted();
         const id = await audioCacheId(JSON.stringify([provider, voice.id, voice.language, text]));
         const blob = await cachedAudio(id) || await buffer.get({ provider, voice, text }, () => {});
